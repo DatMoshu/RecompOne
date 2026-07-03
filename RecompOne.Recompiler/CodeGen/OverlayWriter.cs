@@ -109,7 +109,9 @@ public static class OverlayWriter
 
         foreach (var overlayConfig in config.Overlays)
         {
-            if (overlayConfig.Elf == null && overlayConfig.Map == null && overlayConfig.FuncMap == null)
+            bool useLinearSweep = overlayConfig.LinearSweep ?? config.LinearSweep;
+
+            if (overlayConfig.Elf == null && overlayConfig.Map == null && overlayConfig.FuncMap == null && !useLinearSweep)
             {
                 Console.WriteLine($"[Recompiler] WARNING: Overlay '{overlayConfig.Name}' has no 'elf', 'map' or 'funcMap' defined, this will be skiped");
                 continue;
@@ -124,18 +126,15 @@ public static class OverlayWriter
                 Console.WriteLine($"[Recompiler] WARNING: map file not found for overlay '{overlayConfig.Name}' ({overlayConfig.Map}), this will be skiped.");
                 continue;
             }
-            if (overlayConfig.FuncMap != null)
+            if (overlayConfig.FuncMap != null && !File.Exists(overlayConfig.FuncMap))
             {
-                if (!File.Exists(overlayConfig.FuncMap))
-                {
-                    Console.WriteLine($"[Recompiler] WARNING: function map not found for overlay '{overlayConfig.Name}' ({overlayConfig.FuncMap}), this will be skiped.");
-                    continue;
-                }
-                if (overlayConfig.Elf == null && overlayConfig.Map == null && overlayConfig.Base == null)
-                {
-                    Console.WriteLine($"[Recompiler] WARNING: overlay '{overlayConfig.Name}' uses 'funcMap' alone but has no 'base' address defined, this will be skiped.");
-                    continue;
-                }
+                Console.WriteLine($"[Recompiler] WARNING: function map not found for overlay '{overlayConfig.Name}' ({overlayConfig.FuncMap}), this will be skiped.");
+                continue;
+            }
+            if (overlayConfig.Elf == null && overlayConfig.Map == null && overlayConfig.Base == null)
+            {
+                Console.WriteLine($"[Recompiler] WARNING: overlay '{overlayConfig.Name}' has no 'elf' or 'map' and no 'base' address defined, this will be skiped.");
+                continue;
             }
 
             if (overlayConfig.Elf != null)
@@ -162,6 +161,13 @@ public static class OverlayWriter
 
             var elfInfo = FunctionMapLoader.Merge(rawElf, rawMap, rawFuncMap);
             if (elfInfo.TextData.Length == 0) elfInfo.TextData = discBin;
+
+            if (elfInfo.TextBase == 0 && overlayConfig.Base != null)
+            {
+                uint baseAddr = Convert.ToUInt32(overlayConfig.Base, 16);
+                elfInfo.TextBase = baseAddr;
+                elfInfo.LoadAddress = baseAddr;
+            }
 
             if (overlayConfig.Rebase != 0)
                 RebaseElf(elfInfo, overlayConfig.Rebase, discBin);

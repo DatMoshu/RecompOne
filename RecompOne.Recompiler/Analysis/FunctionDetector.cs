@@ -61,6 +61,7 @@ public static class FunctionDetector
             int si = InstrIndex(all, start);
             if (si < 0) continue;
             int ei = Math.Clamp(RefineEnd(all, si, InstrIndex(all, maxEnd)), si + 1, all.Length);
+            if (SliceHasUnknownInstruction(all, si, ei)) continue;
 
             string name = $"func_{start:X8}";
             funcs.Add(new MipsFunction
@@ -192,6 +193,8 @@ public static class FunctionDetector
 
             int ei = Math.Clamp(RefineEnd(all, i, boundIdx), i + 1, all.Length);
 
+            if (SliceHasUnknownInstruction(all, i, ei)) { i++; continue; }
+
             string name = $"func_{addr:X8}";
             if (named.TryGetValue(addr, out var sym) && !string.IsNullOrEmpty(sym.Name)) name = sym.Name;
 
@@ -219,10 +222,49 @@ public static class FunctionDetector
         for (int i = startIdx; i < boundIdx; i++)
         {
             var instr = all[i];
-            if (!instr.IsValid || !instr.IsImplemented) return false;
+            if (!IsKnownInstruction(instr)) return false;
             if (IsFunctionEnd(all, startIdx, i)) return true;
         }
         return false;
+    }
+
+    static bool SliceHasUnknownInstruction(MipsInstruction[] all, int startIdx, int endIdx)
+    {
+        for (int i = startIdx; i < endIdx; i++)
+        {
+            if (!IsKnownInstruction(all[i])) return true;
+        }
+        return false;
+    }
+
+    static bool IsKnownInstruction(MipsInstruction i)
+    {
+        if (!i.IsValid || !i.IsImplemented) return false;
+
+        uint op = i.Word >> 26;
+        uint fn = i.Word & 0x3F;
+
+        if (op == 0)
+        {
+            return fn is 0 or 2 or 3 or 4 or 6 or 7 or 8 or 9 or 12 or 13 or 16 or 17 or 18 or 19 or 24 or 25 or 26 or 27 or 32 or 33 or 34 or 35 or 36 or 37 or 38 or 39 or 42 or 43;
+        }
+        if (op == 1)
+        {
+            return i.Rt is 0x00 or 0x01 or 0x10 or 0x11;
+        }
+        if (op >= 2 && op <= 15) return true;
+        if (op == 16)
+        {
+            uint cop0rs = (i.Word >> 21) & 0x1F;
+            return cop0rs is 0 or 4 or 16;
+        }
+        if (op == 18)
+        {
+            if (((i.Word >> 25) & 1) == 1) return true;
+            uint cop2rs = (i.Word >> 21) & 0x1F;
+            return cop2rs is 0 or 2 or 4 or 6 or 8;
+        }
+        return op is 32 or 33 or 34 or 35 or 36 or 37 or 38 or 40 or 41 or 42 or 43 or 46 or 50 or 58;
     }
 
     static MipsFunction? BuildFunc(MipsInstruction[] all, uint addr, List<uint> starts, Dictionary<uint, FunctionEntry> named, uint codeEnd, string overlayName)
@@ -239,6 +281,7 @@ public static class FunctionDetector
         }
 
         int ei = Math.Clamp(RefineEnd(all, si, InstrIndex(all, maxEnd)), si + 1, all.Length);
+        if (SliceHasUnknownInstruction(all, si, ei)) return null;
         return new MipsFunction
         {
             Name = name,
