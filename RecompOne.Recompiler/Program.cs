@@ -24,6 +24,19 @@ if (!File.Exists(configPath))
 
 var config = ConfigLoader.Load(configPath);
 string configDir = Path.GetDirectoryName(configPath)!;
+
+string? ResolvePath(string? p) => p == null ? null : Path.IsPathRooted(p) ? p : Path.GetFullPath(Path.Combine(configDir, p));
+
+config.Elf = ResolvePath(config.Elf);
+config.Map = ResolvePath(config.Map);
+config.FuncMap = ResolvePath(config.FuncMap);
+foreach (var overlay in config.Overlays)
+{
+    overlay.Elf = ResolvePath(overlay.Elf);
+    overlay.Map = ResolvePath(overlay.Map);
+    overlay.FuncMap = ResolvePath(overlay.FuncMap);
+}
+
 string cuePath = Path.GetFullPath(Path.Combine(configDir, config.Cue));
 
 if (!File.Exists(cuePath))

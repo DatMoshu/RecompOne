@@ -54,19 +54,8 @@ public static class EntryWriter
         stubs.AppendLine("    public static void Break(CpuContext c, IMemory m) { }");
         stubs.AppendLine("}");
 
-        var program = new StringBuilder();
-        program.AppendLine("using RecompOne.Runtime.Memory;");
-        program.AppendLine("using Recompiled;");
-        program.AppendLine();
-        program.AppendLine("var m = new PSMemory();");
-        program.AppendLine("Entry.Run(m, args.Length > 0 ? args[0] : null);");
-        program.AppendLine("return 0;");
-
         File.WriteAllText(Path.Combine(outDir, "Entry.cs"),   entry.ToString());
         File.WriteAllText(Path.Combine(outDir, "Stubs.cs"),   stubs.ToString());
-        var programPath = Path.Combine(outDir, "Program.cs");
-        if (!File.Exists(programPath))
-            File.WriteAllText(programPath, program.ToString());
     }
 
     static string DispatchTableName(string name) => $"{char.ToUpperInvariant(name[0])}{name[1..]}DispatchTable";
