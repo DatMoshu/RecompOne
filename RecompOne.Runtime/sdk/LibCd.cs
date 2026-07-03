@@ -97,6 +97,7 @@ public static class LibCd
 
         for (int i = 0; i < sectors; i++)
         {
+            Dispatcher.LoadByLba(lba + i);
             byte[] data;
             lock (DiscLock) data = Runtime.Cd!.ReadSectorData(lba + i, size);
             for (int j = 0; j < data.Length; j++)
@@ -130,6 +131,7 @@ public static class LibCd
             _lastIntr = DataReady;
             if (_cbReady != 0) { c.A0 = DataReady; c.A1 = 0; Dispatcher.Call(c, m, _cbReady); }
             AdvancePos(1);
+            Dispatcher.LoadByLba(PosToInt(_pos));
             if (_cbData != 0) { c.A0 = DataReady; c.A1 = 0; Dispatcher.Call(c, m, _cbData); }
         }
         c.Restore(snap);
