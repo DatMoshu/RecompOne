@@ -8,6 +8,8 @@ public sealed class RecompOneConfig
     [JsonPropertyName("game")] public GameConfig Game { get; set; } = new();
     [JsonPropertyName("cue")] public string Cue { get; set; } = "";
     [JsonPropertyName("elf")] public string? Elf { get; set; }
+    [JsonPropertyName("map")] public string? Map { get; set; }
+    [JsonPropertyName("funcMap")] public string? FuncMap { get; set; }
     [JsonPropertyName("main")] public string? Main { get; set; }
     [JsonPropertyName("functions")] public FunctionEntry[] Functions { get; set; } = [];
     [JsonPropertyName("linearSweep")] public bool LinearSweep { get; set; } //linear sweep is to find functions when the elf doesnt ptovide then properly (fuck you sh) this can and WILL get some data as code, use it by your own risk
@@ -37,6 +39,9 @@ public sealed class OverlayConfig
 {
     [JsonPropertyName("name")] public string Name { get; set; } = "";
     [JsonPropertyName("elf")] public string? Elf { get; set; }
+    [JsonPropertyName("map")] public string? Map { get; set; }
+    [JsonPropertyName("funcMap")] public string? FuncMap { get; set; }
+    [JsonPropertyName("base")] public string? Base { get; set; }
     [JsonPropertyName("file")] public string? File { get; set; }
     [JsonPropertyName("offset")] public int Offset { get; set; } = 0;
     [JsonPropertyName("skip")] public int Skip { get; set; } = 0;

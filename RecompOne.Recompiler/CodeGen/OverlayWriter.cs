@@ -4,6 +4,8 @@ using RecompOne.Recompiler.Analysis;
 using RecompOne.Recompiler.Config;
 using RecompOne.Recompiler.Disasm;
 using RecompOne.Recompiler.Elf;
+using RecompOne.Recompiler.Map;
+using RecompOne.Recompiler.Symbols;
 using RecompOne.Recompiler.Psx;
 using RecompOne.Runtime.Cdrom;
 
@@ -30,17 +32,44 @@ public static class OverlayWriter
         {
             List<MipsFunction> funcs;
             MipsInstruction[] mainInstrs;
-            ElfInfo? elfInfo = null;
+            FunctionInfo? elfInfo = null;
 
+            FunctionInfo? rawElf = null;
             if (config.Elf != null)
             {
                 if (!File.Exists(config.Elf))
                     throw new FileNotFoundException($"Main ELF not found: {config.Elf}");
 
-                Console.WriteLine($"[Recompiler] Processing main executable: {config.Elf}");
-                elfInfo = ElfReader.Read(config.Elf);
-                Console.WriteLine($"[Recompiler] ELF map: TextBase=0x{elfInfo.TextBase:X8} Functions={elfInfo.Functions.Count}");
-                Console.WriteLine($"[Recompiler] code source: disc PS-EXE {sysCfg.BootExe} ({mainExe.Code.Length}B)");
+                Console.WriteLine($"[Recompiler] Processing main executable with ELF: {config.Elf} (WARNING: 'elf' is deprecated, prefer 'map'/'funcMap')");
+                rawElf = ElfReader.Read(config.Elf);
+            }
+
+            FunctionInfo? rawMap = null;
+            if (config.Map != null)
+            {
+                if (!File.Exists(config.Map))
+                    throw new FileNotFoundException($"Main map not found: {config.Map}");
+
+                Console.WriteLine($"[Recompiler] Processing main executable with map: {config.Map}");
+                rawMap = MapReader.Read(config.Map);
+            }
+
+            FunctionInfo? rawFuncMap = null;
+            if (config.FuncMap != null)
+            {
+                if (!File.Exists(config.FuncMap))
+                    throw new FileNotFoundException($"Main function map not found: {config.FuncMap}");
+
+                Console.WriteLine($"[Recompiler] Processing main executable with function map: {config.FuncMap}");
+                uint funcMapBase = rawElf?.TextBase ?? rawMap?.LoadAddress ?? mainExe.Destination;
+                rawFuncMap = FunctionMapLoader.Load(config.FuncMap, funcMapBase, mainExe.Code);
+            }
+
+            if (rawElf != null || rawMap != null || rawFuncMap != null)
+            {
+                elfInfo = FunctionMapLoader.Merge(rawElf, rawMap, rawFuncMap);
+                if (elfInfo.TextData.Length == 0) elfInfo.TextData = mainExe.Code;
+                Console.WriteLine($"[Recompiler] main function info: TextBase=0x{elfInfo.TextBase:X8} Functions={elfInfo.Functions.Count}");
 
                 mainInstrs = MipsDisasm.Disassemble(mainExe.Code, elfInfo.TextBase);
 
@@ -80,19 +109,39 @@ public static class OverlayWriter
 
         foreach (var overlayConfig in config.Overlays)
         {
-            if (overlayConfig.Elf == null)
+            if (overlayConfig.Elf == null && overlayConfig.Map == null && overlayConfig.FuncMap == null)
             {
-                Console.WriteLine($"[Recompiler] WARNING: Overlay '{overlayConfig.Name}' has no ELF defined, this will be skiped");
+                Console.WriteLine($"[Recompiler] WARNING: Overlay '{overlayConfig.Name}' has no 'elf', 'map' or 'funcMap' defined, this will be skiped");
                 continue;
             }
-            if (!File.Exists(overlayConfig.Elf))
+            if (overlayConfig.Elf != null && !File.Exists(overlayConfig.Elf))
             {
                 Console.WriteLine($"[Recompiler] WARNING: ELF file not found for overlay '{overlayConfig.Name}' ({overlayConfig.Elf}), this will be skiped.");
                 continue;
             }
+            if (overlayConfig.Map != null && !File.Exists(overlayConfig.Map))
+            {
+                Console.WriteLine($"[Recompiler] WARNING: map file not found for overlay '{overlayConfig.Name}' ({overlayConfig.Map}), this will be skiped.");
+                continue;
+            }
+            if (overlayConfig.FuncMap != null)
+            {
+                if (!File.Exists(overlayConfig.FuncMap))
+                {
+                    Console.WriteLine($"[Recompiler] WARNING: function map not found for overlay '{overlayConfig.Name}' ({overlayConfig.FuncMap}), this will be skiped.");
+                    continue;
+                }
+                if (overlayConfig.Elf == null && overlayConfig.Map == null && overlayConfig.Base == null)
+                {
+                    Console.WriteLine($"[Recompiler] WARNING: overlay '{overlayConfig.Name}' uses 'funcMap' alone but has no 'base' address defined, this will be skiped.");
+                    continue;
+                }
+            }
 
-            Console.WriteLine($"[Recompiler] processing the overlay {overlayConfig.Name}");
-            var elfInfo = ElfReader.Read(overlayConfig.Elf);
+            if (overlayConfig.Elf != null)
+                Console.WriteLine($"[Recompiler] processing the overlay {overlayConfig.Name} (WARNING: 'elf' is deprecated, prefer 'map'/'funcMap')");
+            else
+                Console.WriteLine($"[Recompiler] processing the overlay {overlayConfig.Name}");
 
             var (discBin, overlayLba) = ResolveOverlay(fs, overlayConfig);
             if (discBin == null)
@@ -100,6 +149,19 @@ public static class OverlayWriter
                 Console.WriteLine($"[Recompiler] WARNING: could not resolve disc data for overlay '{overlayConfig.Name}', skipping");
                 continue;
             }
+
+            var rawElf = overlayConfig.Elf != null ? ElfReader.Read(overlayConfig.Elf) : null;
+            var rawMap = overlayConfig.Map != null ? MapReader.Read(overlayConfig.Map) : null;
+
+            FunctionInfo? rawFuncMap = null;
+            if (overlayConfig.FuncMap != null)
+            {
+                uint funcMapBase = rawElf?.TextBase ?? rawMap?.LoadAddress ?? Convert.ToUInt32(overlayConfig.Base, 16);
+                rawFuncMap = FunctionMapLoader.Load(overlayConfig.FuncMap, funcMapBase, discBin);
+            }
+
+            var elfInfo = FunctionMapLoader.Merge(rawElf, rawMap, rawFuncMap);
+            if (elfInfo.TextData.Length == 0) elfInfo.TextData = discBin;
 
             if (overlayConfig.Rebase != 0)
                 RebaseElf(elfInfo, overlayConfig.Rebase, discBin);
@@ -161,7 +223,7 @@ public static class OverlayWriter
         Console.WriteLine("[Recompiler] finished "); //maybe add time it took
     }
     
-    static void AddConfigFunctions(List<MipsFunction> funcs, Config.FunctionEntry[] entries, MipsInstruction[] instrs, IEnumerable<Elf.FunctionEntry> noTypeSymbols, string overlayName)
+    static void AddConfigFunctions(List<MipsFunction> funcs, Config.FunctionEntry[] entries, MipsInstruction[] instrs, IEnumerable<Symbols.FunctionEntry> noTypeSymbols, string overlayName)
     {
         if (entries.Length == 0) return;
 
@@ -179,7 +241,7 @@ public static class OverlayWriter
         Console.WriteLine($"[Recompiler] added {extras.Count} config function(s) (+{callees.Count} callees) to {overlayName}");
     }
 
-    static void SweepFunctions(List<MipsFunction> funcs, MipsInstruction[] instrs, IEnumerable<Elf.FunctionEntry> noTypeSymbols, string overlayName)
+    static void SweepFunctions(List<MipsFunction> funcs, MipsInstruction[] instrs, IEnumerable<Symbols.FunctionEntry> noTypeSymbols, string overlayName)
     {
         var swept = FunctionDetector.LinearSweep(instrs, funcs, noTypeSymbols, overlayName);
         if (swept.Count == 0) return;
@@ -287,7 +349,7 @@ public static class OverlayWriter
     }
 
     
-    static void RebaseElf(ElfInfo elf, int delta, byte[] discBin)
+    static void RebaseElf(FunctionInfo elf, int delta, byte[] discBin)
     {
         uint d = (uint)delta;
         elf.TextBase += d;
@@ -310,7 +372,7 @@ public static class OverlayWriter
         }
         return data;
     }
-    static void AnalyzeJumpTables(List<MipsFunction> funcs, ElfInfo elf, string name)
+    static void AnalyzeJumpTables(List<MipsFunction> funcs, FunctionInfo elf, string name)
     {
         int funcsWithTables = 0, totalEntries = 0;
         foreach (var func in funcs)

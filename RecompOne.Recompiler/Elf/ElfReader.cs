@@ -1,38 +1,15 @@
 using LibObjectFile.Elf;
+using RecompOne.Recompiler.Symbols;
 
 namespace RecompOne.Recompiler.Elf;
 
-public sealed class FunctionEntry
-{
-    public string Name = "";
-    public uint Address;
-    public uint Size;
-}
-public sealed class DataSection
-{
-    public string Name = "";
-    public uint Va;
-    public byte[] Data = [];
-    public bool IsZero;
-    public uint ZeroSize;
-}
-public sealed class ElfInfo
-{
-    public uint LoadAddress;
-    public uint TextBase;
-    public byte[] TextData = [];
-    public List<FunctionEntry> Functions = [];
-    public List<FunctionEntry> NoTypeSymbols = [];
-    public List<DataSection> DataSections = [];
-}
-
 public static class ElfReader
 {
-    public static ElfInfo Read(string path)
+    public static FunctionInfo Read(string path)
     {
         using var stream = File.OpenRead(path);
         var elf = ElfFile.Read(stream);
-        var info = new ElfInfo();
+        var info = new FunctionInfo();
 
         foreach (var seg in elf.Segments)
         {

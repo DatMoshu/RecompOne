@@ -1,11 +1,11 @@
 using RecompOne.Recompiler.Disasm;
-using RecompOne.Recompiler.Elf;
+using RecompOne.Recompiler.Symbols;
 
 namespace RecompOne.Recompiler.Analysis;
 
 public static class FunctionDetector
 {
-    public static List<MipsFunction> DetectFromElf(MipsInstruction[] all, ElfInfo elf, string overlayName)
+    public static List<MipsFunction> DetectFromElf(MipsInstruction[] all, FunctionInfo elf, string overlayName)
     {
         if (all.Length == 0) return [];
 

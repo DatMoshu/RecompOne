@@ -1,5 +1,5 @@
 using System.Buffers.Binary;
-using RecompOne.Recompiler.Elf;
+using RecompOne.Recompiler.Symbols;
 
 namespace RecompOne.Recompiler.Analysis;
 
@@ -19,7 +19,7 @@ public static class JumpTableAnalyzer
         public void Invalidate() => this = default;
     }
 
-    public static List<JumpTable> Analyze(MipsFunction func, ElfInfo elf)
+    public static List<JumpTable> Analyze(MipsFunction func, FunctionInfo elf)
     {
         var regs = new RegState[32];
         var result = new List<JumpTable>();
@@ -141,7 +141,7 @@ public static class JumpTableAnalyzer
             regs[rd].Invalidate();
     }
 
-    static uint[] ReadEntries(ElfInfo elf, uint tableVram, MipsFunction func)
+    static uint[] ReadEntries(FunctionInfo elf, uint tableVram, MipsFunction func)
     {
         var  entries = new List<uint>();
         uint vram = tableVram;
@@ -154,7 +154,7 @@ public static class JumpTableAnalyzer
         return entries.ToArray();
     }
 
-    static bool TryReadWord(ElfInfo elf, uint vram, out uint value)
+    static bool TryReadWord(FunctionInfo elf, uint vram, out uint value)
     {
         foreach (var sec in elf.DataSections)
         {
