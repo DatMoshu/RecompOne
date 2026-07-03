@@ -62,7 +62,30 @@ public static class FunctionEmitter
             }
         }
 
+        if (FallsThrough(instrs))
+        {
+            if (ctx.KnownFunctions.TryGetValue(func.End, out var fallthroughName))
+                sb.AppendLine($"{ind}{fallthroughName}(c, m);");
+            else
+                sb.AppendLine($"{ind}Dispatcher.Call(c, m, 0x{func.End:X8}u);");
+        }
+
         sb.AppendLine("    }");
         return sb.ToString();
+    }
+
+    //some hand-written asm (crt0 stubs, etc) has no jr/j/branch at its declared end at all and just
+    // runs straight into the next symbol if a jal at the end is a call, not a fall-through, so its left alone
+    static bool FallsThrough(MipsInstruction[] instrs)
+    {
+        if (instrs.Length == 0) return false;
+
+        int idx = instrs.Length - 1;
+        if (instrs.Length >= 2 && instrs[idx - 1].HasDelaySlot) idx--;
+
+        var ctrl = instrs[idx];
+        if (ctrl.IsReturn || ctrl.IsJump || ctrl.IsRegisterJump || ctrl.IsUnconditionalBranch) return false;
+        if (ctrl.IsFunctionCall) return false;
+        return true;
     }
 }
