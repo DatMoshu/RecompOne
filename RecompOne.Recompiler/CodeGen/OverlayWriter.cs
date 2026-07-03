@@ -399,8 +399,19 @@ public static class OverlayWriter
                 if (!string.IsNullOrEmpty(patch.Overlay) && !string.Equals(func.OverlayName, patch.Overlay, StringComparison.OrdinalIgnoreCase)) continue;
                 bool hit = addr.HasValue ? func.Start == addr.Value : string.Equals(func.Name, patch.Function, StringComparison.Ordinal);
                 if (!hit) continue;
-                func.IsPatch = true;
-                func.PatchTarget = patch.Target;
+                switch (patch.Mode.ToLowerInvariant())
+                {
+                    case "pre":
+                        func.PreHookTarget = patch.Target;
+                        break;
+                    case "post":
+                        func.PostHookTarget = patch.Target;
+                        break;
+                    default:
+                        func.IsPatch = true;
+                        func.PatchTarget = patch.Target;
+                        break;
+                }
                 matched++;
                 applied++;
             }

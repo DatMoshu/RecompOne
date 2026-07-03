@@ -13,5 +13,7 @@ public sealed class MipsFunction
     public bool IsStub;
     public bool IsPatch;
     public string PatchTarget = "";
+    public string PreHookTarget = "";
+    public string PostHookTarget = "";
     public List<JumpTable> JumpTables = [];
 }

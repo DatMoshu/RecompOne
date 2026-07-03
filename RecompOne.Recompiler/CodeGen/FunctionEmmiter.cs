@@ -35,9 +35,20 @@ public static class FunctionEmitter
             sb.AppendLine($"    public static void {name}(CpuContext c, IMemory m) => {func.PatchTarget}(c, m);");
             return sb.ToString();
         }
+        if (func.PostHookTarget.Length > 0)
+        {
+            sb.AppendLine($"    public static void {name}(CpuContext c, IMemory m)");
+            sb.AppendLine("    {");
+            sb.AppendLine($"        {name}_Impl(c, m);");
+            sb.AppendLine($"        {func.PostHookTarget}(c, m);");
+            sb.AppendLine("    }");
+            name += "_Impl";
+        }
 
         sb.AppendLine($"    public static void {name}(CpuContext c, IMemory m)");
         sb.AppendLine("    {");
+        if (func.PreHookTarget.Length > 0)
+            sb.AppendLine($"        {func.PreHookTarget}(c, m);");
         if (ctx.Debug)
             sb.AppendLine($"        System.Console.WriteLine(\"{func.EmittedName} @ {func.OverlayName} @ 0x{func.Start:X8}\");");
 
