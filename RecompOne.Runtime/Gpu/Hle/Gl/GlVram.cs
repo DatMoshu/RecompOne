@@ -14,6 +14,7 @@ public sealed class GlVram
     uint _scratchTex;
 
     public uint Texture => _tex;
+    public uint Fbo => _fbo;
 
     public GlVram(GL gl) => _gl = gl;
 

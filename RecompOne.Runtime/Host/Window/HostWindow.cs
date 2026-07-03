@@ -194,12 +194,12 @@ internal static class HostWindow
             if (Hle.GpuHle.Active && _glBackend is { Ready: true } && gpu.DisplayEnabled)
             {
                 var wf = _window!.FramebufferSize;
-                var (tex, tw, th) = _glBackend.PresentDisplay(
+                var (tex, tw, th, aspect) = _glBackend.PresentDisplay(
                     gpu.DisplayX, gpu.DisplayY,
                     gpu.DisplayWidth, gpu.DisplayHeight,
                     gpu.Display24Bit,
                     outW: wf.X, outH: wf.Y);
-                if (tex != 0) OutputPanel.SetTexture(tex, tw, th);
+                if (tex != 0) OutputPanel.SetTexture(tex, tw, th, aspect);
                 gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
                 gl.Viewport(0, 0, (uint)wf.X, (uint)wf.Y);
             }

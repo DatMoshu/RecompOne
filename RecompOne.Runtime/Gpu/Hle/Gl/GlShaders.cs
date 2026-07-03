@@ -20,9 +20,10 @@ internal static class GlShaders
         uniform sampler2D uVram;
         uniform vec2 uOrigin;
         uniform vec2 uSize;
+        uniform vec2 uTexSize;
         out vec4 oColor;
         void main() {
-            vec2 t = (uOrigin + vUv * uSize) / vec2(1024.0, 512.0);
+            vec2 t = (uOrigin + vUv * uSize) / uTexSize;
             oColor = vec4(texture(uVram, t).rgb, 1.0);
         }
         """;
@@ -70,11 +71,12 @@ internal static class GlShaders
         flat out int   texMode;
 
         uniform vec2 uVertexOffset;
+        uniform vec2 uPosBias;
+        uniform vec2 uFbInv;
 
         void main() {
-            float x = (inPos.x + uVertexOffset.x) / 512.0 - 1.0;
-            float y = (inPos.y + uVertexOffset.y) / 256.0 - 1.0;
-            gl_Position = vec4(x, y, 0.0, 1.0);
+            vec2 p = (inPos + uVertexOffset + uPosBias) * uFbInv - 1.0;
+            gl_Position = vec4(p, 0.0, 1.0);
 
             vColor = vec4(float(inColor & 0xFFu), float((inColor >> 8) & 0xFFu), float((inColor >> 16) & 0xFFu), 0.0) / 255.0;
 
@@ -101,6 +103,7 @@ internal static class GlShaders
         layout(location = 0, index = 1) out vec4 BlendColor;
 
         uniform sampler2D uVram;
+        uniform sampler2D uDest;
         uniform ivec4 uTexWindow;
         uniform vec4  uBlend;
         uniform vec4  uBlendOpaque = vec4(1.0, 1.0, 1.0, 0.0);
@@ -117,7 +120,7 @@ internal static class GlShaders
         vec4 modulate(vec4 tex, vec4 col) { vec4 r = (tex * col) / (128.0 / 255.0); r.a = 1.0; return r; }
 
         void main() {
-            if (uCheckMask != 0 && texelFetch(uVram, ivec2(gl_FragCoord.xy), 0).a >= 0.5) discard;
+            if (uCheckMask != 0 && texelFetch(uDest, ivec2(gl_FragCoord.xy), 0).a >= 0.5) discard;
 
             if (texMode == 4) {
                 FragColor = vec4(vColor.rgb, uSetMask);

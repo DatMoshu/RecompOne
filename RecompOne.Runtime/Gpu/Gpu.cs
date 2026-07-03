@@ -48,6 +48,7 @@ public sealed partial class Gpu
     public int DisplayY => _dispVramY;
     public bool DisplayEnabled => !_displayDisabled;
     public bool Display24Bit => _disp24;
+    public bool Pal => _pal;
 
     int CyclesPerPixel => _hres368 ? 7 : _hres switch { 0 => 10, 1 => 8, 2 => 5, _ => 4 };
 
@@ -141,15 +142,27 @@ public sealed partial class Gpu
         uint p = word & 0xFFFFFF;
         switch (op)
         {
+            case >= 0x05 and <= 0x08:
+                WriteGp1Display(op, p);
+                GpuHle.NotifyDisplay(_dispVramX, _dispVramY, DisplayWidth, DisplayHeight);
+                return;
             case 0x00: Reset(); break;
             case 0x01: _fifo.Clear(); _polyline = false; _loadImage = false; break;
             case 0x02: break;
             case 0x03: _displayDisabled = (p & 1) != 0; break;
             case 0x04: _dmaDir = (int)(p & 3); break;
+            case 0x10: SetGpuInfo(p); break;
+        }
+    }
+
+    void WriteGp1Display(uint op, uint p)
+    {
+        switch (op)
+        {
             case 0x05: _dispVramX = (int)(p & 0x3FF); _dispVramY = (int)((p >> 10) & 0x1FF); break;
             case 0x06: _hRange1 = (int)(p & 0xFFF); _hRange2 = (int)((p >> 12) & 0xFFF); break;
             case 0x07: _vRange1 = (int)(p & 0x3FF); _vRange2 = (int)((p >> 10) & 0x3FF); break;
-            case 0x08: 
+            case 0x08:
                 _hres = (int)(p & 3);
                 _hres368 = (p & 0x40) != 0;
                 _vres480 = (p & 4) != 0;
@@ -157,7 +170,6 @@ public sealed partial class Gpu
                 _disp24 = (p & 0x10) != 0;
                 _interlace = (p & 0x20) != 0;
                 break;
-            case 0x10: SetGpuInfo(p); break;
         }
     }
 
