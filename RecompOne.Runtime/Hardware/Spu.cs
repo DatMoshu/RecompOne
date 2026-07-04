@@ -12,6 +12,9 @@ public sealed class Spu
     static readonly int[] K0 = { 0,  60, 115,  98, 122 };
     static readonly int[] K1 = { 0,   0, -52, -55, -60 };
 
+    static readonly int[] AdsrStepDown = { -8, -7, -6, -5 };
+    static readonly int[] AdsrStepUp = { 7, 6, 5, 4 };
+
 
     static readonly short[] Gauss = {
         -0x001, -0x001, -0x001, -0x001, -0x001, -0x001, -0x001, -0x001, //
@@ -107,6 +110,7 @@ public sealed class Spu
     }
 
     readonly Voice[] _v = new Voice[24];
+    readonly object _sync = new();
 
     ushort _mainVolL, _mainVolR;
     ushort _reverbVolL, _reverbVolR;
@@ -132,6 +136,11 @@ public sealed class Spu
     }
 
     public ushort ReadReg16(uint phys)
+    {
+        lock (_sync) return ReadReg(phys);
+    }
+
+    ushort ReadReg(uint phys)
     {
         uint off = phys - Base;
 
@@ -184,6 +193,11 @@ public sealed class Spu
     }
 
     public void WriteReg16(uint phys, ushort val)
+    {
+        lock (_sync) WriteReg(phys, val);
+    }
+
+    void WriteReg(uint phys, ushort val)
     {
         uint off = phys - Base;
 
@@ -269,11 +283,37 @@ public sealed class Spu
 
     public void DmaWrite(uint spuByteAddr, ReadOnlySpan<byte> data)
     {
-        for (int i = 0; i < data.Length; i++)
-            Ram[(spuByteAddr + (uint)i) & (RamSize - 1)] = data[i];
+        lock (_sync)
+        {
+            for (int i = 0; i < data.Length; i++)
+                Ram[(spuByteAddr + (uint)i) & (RamSize - 1)] = data[i];
+        }
     }
 
-    public (short L, short R) Tick()
+    public void Mix(short[] dst, int frames)
+    {
+        lock (_sync)
+        {
+            int mainL = VolFactor(_mainVolL);
+            int mainR = VolFactor(_mainVolR);
+            for (int n = 0; n < frames; n++)
+            {
+                var (l, r) = Tick();
+                int mixL = l, mixR = r;
+                if (XaAudio.Next(out short xl, out short xr))
+                {
+                    mixL += xl * (short)_cdVolL >> 15;
+                    mixR += xr * (short)_cdVolR >> 15;
+                }
+                mixL = Math.Clamp(mixL, -32768, 32767) * mainL >> 15;
+                mixR = Math.Clamp(mixR, -32768, 32767) * mainR >> 15;
+                dst[n * 2] = (short)mixL;
+                dst[n * 2 + 1] = (short)mixR;
+            }
+        }
+    }
+
+    (short L, short R) Tick()
     {
         TickNoise();
         int sumL = 0, sumR = 0;
@@ -297,7 +337,7 @@ public sealed class Spu
             v.PitchCounter += pitch;
 
             while (v.SampleIndex >= 28)
-                DecodeBlock(v);
+                DecodeBlock(v, i);
 
             int sample;
             if (noise)
@@ -325,8 +365,8 @@ public sealed class Spu
             int amp = (sample * v.AdsrVol) >> 15;
             prevAmp = amp;
 
-            int volL = (v.VolL & 0x8000) != 0 ? (short)(v.VolL << 1) : (short)(v.VolL & 0x7FFF) << 1;
-            int volR = (v.VolR & 0x8000) != 0 ? (short)(v.VolR << 1) : (short)(v.VolR & 0x7FFF) << 1;
+            int volL = VolFactor(v.VolL);
+            int volR = VolFactor(v.VolR);
             sumL += (amp * volL) >> 15;
             sumR += (amp * volR) >> 15;
         }
@@ -336,7 +376,10 @@ public sealed class Spu
         return ((short)sumL, (short)sumR);
     }
 
-    void DecodeBlock(Voice v)
+    static int VolFactor(ushort vol)
+        => (vol & 0x8000) != 0 ? (short)(vol << 1) : (short)(vol & 0x7FFF) << 1;
+
+    void DecodeBlock(Voice v, int index)
     {
         uint addr = v.CurAddr & (uint)(RamSize - 1);
         byte hdr = Ram[addr];
@@ -367,7 +410,7 @@ public sealed class Spu
         if ((flags & 1) != 0)
         {
             v.EndX = true;
-            _endx  |= 1u << Array.IndexOf(_v, v);
+            _endx  |= 1u << index;
             v.CurAddr = (uint)v.RepeatAddr << 3;
 
             if ((flags & 2) == 0)
@@ -425,8 +468,7 @@ public sealed class Spu
         };
 
         int cycles = 1 << Math.Max(0, shift - 11);
-        int[] stepTable = decrease ? new[]{-8,-7,-6,-5} : new[]{7,6,5,4};
-        int step = stepTable[stepIdx] << Math.Max(0, 11 - shift);
+        int step = (decrease ? AdsrStepDown : AdsrStepUp)[stepIdx] << Math.Max(0, 11 - shift);
 
         if (exp && !decrease && v.AdsrVol > 0x6000) cycles *= 4;
         if (exp &&  decrease) { step = step * v.AdsrVol / 0x8000; if (step == 0) step = -1; }

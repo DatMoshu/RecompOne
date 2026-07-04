@@ -40,7 +40,7 @@ public static class Runtime
     public static void PresentFrame()
     {
         HostWindow.Present(Gpu);
-        Audio.Present(Spu);
+        Audio.Attach(Spu);
         FrameClock.Throttle();
         Sdk.LibCd.Tick();
         if (Mem != null) { Bios.BiosB.RefreshPad(Mem); Sdk.LibPad.Refresh(Mem); } //is this correct?

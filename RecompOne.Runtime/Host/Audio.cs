@@ -11,13 +11,17 @@ internal static unsafe class Audio
     static ALDevice* _device;
     static ALCtx* _context;
 
-    
-    const int NumBuffers = 8;
+
+    const int NumBuffers = 4;
     const int FramesPerBuffer = 735;
 
     static uint _source;
     static uint[] _buffers = new uint[NumBuffers];
     static short[] _sampleBuf = new short[FramesPerBuffer * 2];
+
+    static Thread? _mixerThread;
+    static Spu? _spu;
+    static volatile bool _running;
 
     public static void Initialize()
     {
@@ -47,6 +51,10 @@ internal static unsafe class Audio
             }
 
             _al.SourcePlay(_source);
+
+            _running = true;
+            _mixerThread = new Thread(MixerLoop) { IsBackground = true, Name = "spu-mixer" };
+            _mixerThread.Start();
         }
         catch (Exception e)
         {
@@ -54,27 +62,30 @@ internal static unsafe class Audio
         }
     }
 
-    public static void Present(Spu? spu)
+    public static void Attach(Spu? spu)
     {
-        if (_al == null || spu == null) return;
+        if (spu != null) _spu = spu;
+    }
 
-        _al.GetSourceProperty(_source, GetSourceInteger.BuffersProcessed, out int processed);
+    static void MixerLoop()
+    {
+        while (_running)
+        {
+            var spu = _spu;
+            if (spu != null) FillBuffers(spu);
+            Thread.Sleep(3);
+        }
+    }
+
+    static void FillBuffers(Spu spu)
+    {
+        _al!.GetSourceProperty(_source, GetSourceInteger.BuffersProcessed, out int processed);
         while (processed > 0)
         {
             uint buf = 0;
             _al.SourceUnqueueBuffers(_source, 1, &buf);
-            
-            for (int i = 0; i < FramesPerBuffer; i++)
-            {
-                var (l, r) = spu.Tick();
-                if (XaAudio.Next(out short xl, out short xr))
-                {
-                    l = (short)Math.Clamp(l + xl, -32768, 32767);
-                    r = (short)Math.Clamp(r + xr, -32768, 32767);
-                }
-                _sampleBuf[i * 2] = l;
-                _sampleBuf[i * 2 + 1] = r;
-            }
+
+            spu.Mix(_sampleBuf, FramesPerBuffer);
 
             _al.BufferData(buf, BufferFormat.Stereo16, _sampleBuf, 44100);
             _al.SourceQueueBuffers(_source, 1, &buf);
@@ -89,6 +100,8 @@ internal static unsafe class Audio
     public static void Shutdown()
     {
         if (_alc == null) return;
+        _running = false;
+        _mixerThread?.Join();
         if (_al != null)
         {
             _al.SourceStop(_source);

@@ -45,6 +45,10 @@ public static class LibCd
     static byte _filterChannel;
 
     internal static readonly object DiscLock = new();
+    static readonly object _posGate = new();
+
+    static Thread? _xaThread;
+    static volatile bool _xaRun;
 
     static readonly bool[] NeedsLoc = BuildNeedsLoc();
 
@@ -90,7 +94,7 @@ public static class LibCd
         int sectors = (int)c.A0;
         uint buf = c.A1;
         _mode = (byte)c.A2;
-        int lba = PosToInt(_pos);
+        int lba = CurrentLba;
         int size = SectorSize(_mode);
         Dispatcher.LoadByLba(lba);
         Log.Sdk($"CdRead sectors={sectors} buf=0x{buf:X8} mode=0x{_mode:X2} lba={lba} size={size}");
@@ -107,18 +111,14 @@ public static class LibCd
         c.V0 = 1;
     }
 
-    internal static int CurrentLba => PosToInt(_pos);
+    internal static int CurrentLba { get { lock (_posGate) return PosToInt(_pos); } }
     internal static double SectorsPerSecond => (_mode & 0x80) != 0 ? 150.0 : 75.0; //cd pacer
 
     internal static void Tick()
     {
         bool xaMode = (_mode & 0x40) != 0;
 
-        if (_readActive && xaMode)
-        {
-            PumpXa();
-            return;
-        }
+        if (_readActive && xaMode) return;
 
         if (!_readActive || _cbData == 0) return;
         var c = Runtime.Cpu;
@@ -131,23 +131,41 @@ public static class LibCd
             _lastIntr = DataReady;
             if (_cbReady != 0) { c.A0 = DataReady; c.A1 = 0; Dispatcher.Call(c, m, _cbReady); }
             AdvancePos(1);
-            Dispatcher.LoadByLba(PosToInt(_pos));
+            Dispatcher.LoadByLba(CurrentLba);
             if (_cbData != 0) { c.A0 = DataReady; c.A1 = 0; Dispatcher.Call(c, m, _cbData); }
         }
         c.Restore(snap);
     }
 
+    static void EnsureXaThread()
+    {
+        if (_xaThread is { IsAlive: true }) return;
+        _xaRun = true;
+        _xaThread = new Thread(XaLoop) { IsBackground = true, Name = "CdXa" };
+        _xaThread.Start();
+    }
+
+    static void XaLoop()
+    {
+        while (_xaRun)
+        {
+            if (_readActive && (_mode & 0x40) != 0 && Runtime.Cd != null)
+                PumpXa();
+            Thread.Sleep(2);
+        }
+    }
+
     static void PumpXa()
     {
         if (Runtime.Cd == null) return;
-        const int MinBuffer = 2016;
+        const int MinBuffer = 4096;
         const int MaxScan = 32;
         bool useFilter = (_mode & 0x08) != 0;
         int scanned = 0;
 
-        while (XaAudio.BufferedSamples < MinBuffer && scanned < MaxScan)
+        while (_readActive && XaAudio.BufferedSamples < MinBuffer && scanned < MaxScan)
         {
-            int lba = PosToInt(_pos);
+            int lba = CurrentLba;
             if (lba < 0) break;
             byte[] sec;
             lock (DiscLock) sec = Runtime.Cd.ReadSectorData(lba, 2336);
@@ -161,7 +179,8 @@ public static class LibCd
 
     static void AdvancePos(int n)
     {
-        IntToPos(PosToInt(_pos) + n, out _pos[0], out _pos[1], out _pos[2]);
+        lock (_posGate)
+            IntToPos(PosToInt(_pos) + n, out _pos[0], out _pos[1], out _pos[2]);
     }
 
     public static void CdReadSync(CpuContext c, IMemory m)
@@ -174,7 +193,7 @@ public static class LibCd
     {
         uint madr = c.A0;
         int words = (int)c.A1;
-        int lba = PosToInt(_pos);
+        int lba = CurrentLba;
         byte[] data;
         lock (DiscLock) data = Runtime.Cd!.ReadSectorData(lba);
         int bytes = Math.Min(data.Length, words * 4);
@@ -265,7 +284,8 @@ public static class LibCd
         {
             case Setloc:
                 if (param != 0)
-                    for (int i = 0; i < 4; i++) _pos[i] = m.ReadU8(param + (uint)i);
+                    lock (_posGate)
+                        for (int i = 0; i < 4; i++) _pos[i] = m.ReadU8(param + (uint)i);
                 break;
             case Setmode:
                 if (param != 0) _mode = m.ReadU8(param);
@@ -275,18 +295,22 @@ public static class LibCd
                 break;
             case ReadN:
                 _readActive = true;
-                Dispatcher.LoadByLba(PosToInt(_pos));
+                Dispatcher.LoadByLba(CurrentLba);
+                EnsureXaThread();
                 break;
             case ReadS:
                 _xaActive = true;
                 _readActive = false;
-                LibCdStream.OnReadStream(PosToInt(_pos));
+                LibCdStream.OnReadStream(CurrentLba);
                 break;
             case GetlocL:
             case GetlocP:
-                _lastResult[0] = _pos[0];
-                _lastResult[1] = _pos[1];
-                _lastResult[2] = _pos[2];
+                lock (_posGate)
+                {
+                    _lastResult[0] = _pos[0];
+                    _lastResult[1] = _pos[1];
+                    _lastResult[2] = _pos[2];
+                }
                 _lastResult[3] = _mode;
                 _lastResult[4] = _filterFile;
                 _lastResult[5] = _filterChannel;
