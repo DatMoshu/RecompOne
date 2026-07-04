@@ -109,9 +109,10 @@ public static class OverlayWriter
 
         foreach (var overlayConfig in config.Overlays)
         {
-            if (overlayConfig.Elf == null && overlayConfig.Map == null && overlayConfig.FuncMap == null)
+            bool noSymbols = overlayConfig.Elf == null && overlayConfig.Map == null && overlayConfig.FuncMap == null;
+            if (noSymbols && !((overlayConfig.LinearSweep ?? config.LinearSweep) && overlayConfig.Base != null))
             {
-                Console.WriteLine($"[Recompiler] WARNING: Overlay '{overlayConfig.Name}' has no 'elf', 'map' or 'funcMap' defined, this will be skiped");
+                Console.WriteLine($"[Recompiler] WARNING: Overlay '{overlayConfig.Name}' has no source defined, this will be skiped");
                 continue;
             }
             if (overlayConfig.Elf != null && !File.Exists(overlayConfig.Elf))
@@ -162,6 +163,12 @@ public static class OverlayWriter
 
             var elfInfo = FunctionMapLoader.Merge(rawElf, rawMap, rawFuncMap);
             if (elfInfo.TextData.Length == 0) elfInfo.TextData = discBin;
+
+            if (noSymbols)
+            {
+                elfInfo.TextBase = Convert.ToUInt32(overlayConfig.Base, 16);
+                elfInfo.LoadAddress = elfInfo.TextBase;
+            }
 
             if (overlayConfig.Rebase != 0)
                 RebaseElf(elfInfo, overlayConfig.Rebase, discBin);
