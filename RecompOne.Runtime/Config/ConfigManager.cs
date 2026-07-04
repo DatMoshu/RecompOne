@@ -73,7 +73,8 @@ internal static class ConfigManager
         var imguiIni = ImGui.SaveIniSettingsToMemory();
         var sb = new StringBuilder();
         sb.AppendLine("[RecompOne]");
-        sb.AppendLine($"HideTopBar={View.HideTopBar}");
+        foreach (var (key, value) in View.Values)
+            sb.AppendLine($"{key}={value}");
         foreach (var (name, state) in View.Panels)
             sb.AppendLine($"Panels.{name}={state.Open}");
         sb.AppendLine();
@@ -116,17 +117,20 @@ internal static class ConfigManager
 
             if (inRecompOne)
             {
-                if (line.StartsWith("HideTopBar="))
-                    view.HideTopBar = bool.TryParse(line[11..], out var b) && b;
-                else if (line.StartsWith("Panels."))
+                if (line.Length == 0) continue;
+                int eq = line.IndexOf('=');
+                if (eq <= 0) continue;
+                var key = line[..eq];
+                var value = line[(eq + 1)..];
+                if (key.StartsWith("Panels."))
                 {
-                    int eq = line.IndexOf('=');
-                    if (eq > 0)
-                    {
-                        var panelName = line[7..eq];
-                        var open = bool.TryParse(line[(eq + 1)..], out var b) && b;
-                        view.Panels[panelName] = new PanelState { Open = open };
-                    }
+                    var panelName = key[7..];
+                    var open = bool.TryParse(value, out var b) && b;
+                    view.Panels[panelName] = new PanelState { Open = open };
+                }
+                else
+                {
+                    view.Values[key] = value;
                 }
             }
             else

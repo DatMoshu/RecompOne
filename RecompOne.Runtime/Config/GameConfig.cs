@@ -44,7 +44,8 @@ public class GamepadBindings
 public class GameConfig
 {
     public string CdPath { get; set; } = "";
-    public bool Fullscreen { get; set; } = false;
+    public float MasterVolume { get; set; } = 1.0f;
+    public bool Muted { get; set; } = false;
     public KeyBindings Keys { get; set; } = new();
     public GamepadBindings Pad { get; set; } = new();
     public List<string> ActiveMods { get; set; } = [];

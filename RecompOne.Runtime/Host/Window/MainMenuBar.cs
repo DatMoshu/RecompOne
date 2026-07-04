@@ -18,8 +18,13 @@ internal static class MainMenuBar
     {
         if (!ImGui.BeginMainMenuBar()) return;
 
-        if (ImGui.BeginMenu("Configuration"))
+        if (ImGui.BeginMenu("Settings"))
         {
+            if (ImGui.MenuItem("Settings..."))
+                if (PanelManager.Get<SettingsPopup>() is { } popup) popup.IsOpen = true;
+
+            ImGui.Separator();
+
             bool showBar = !ConfigManager.View.HideTopBar;
             if (ImGui.MenuItem("Show Menu Bar", "F1", showBar))
             {
@@ -27,19 +32,14 @@ internal static class MainMenuBar
                 ConfigManager.SaveView(PanelManager.Panels);
             }
 
-            bool fs = ConfigManager.Game.Fullscreen;
-            if (ImGui.MenuItem("Fullscreen", null, fs))
+            bool fs = ConfigManager.View.Fullscreen;
+            if (ImGui.MenuItem("Fullscreen", "F11", fs))
             {
-                ConfigManager.Game.Fullscreen = !fs;
+                ConfigManager.View.Fullscreen = !fs;
                 HostWindow.SetFullscreen(!fs);
-                ConfigManager.SaveGame();
+                ConfigManager.SaveView(PanelManager.Panels);
             }
 
-            ImGui.Separator();
-
-            if (ImGui.MenuItem("Input")) if (PanelManager.Get<ConfigPanel>() is { } cfg) cfg.IsOpen = true;
-
-            
             ImGui.EndMenu();
         }
     }

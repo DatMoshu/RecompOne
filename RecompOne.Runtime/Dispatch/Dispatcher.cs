@@ -26,20 +26,13 @@ public static class Dispatcher
     {
         if (!_registry.TryGetValue(name, out var overlay))
             throw new KeyNotFoundException($"overlay not registered: {name}");
-        if (_active.Contains(name)) return;
 
-        var newAddrs = new HashSet<uint>(overlay.Functions.Keys);
-        var toUnload = _active
-            .Where(n => _registry[n].Functions.Keys.Any(a => newAddrs.Contains(a)))
-            .ToList();
-        foreach (var n in toUnload)
-        {
-            _active.Remove(n);
-            Runtime.OverlayLog.Record(n, OverlayEventKind.Overwritten, name);
-        }
-
+        bool already = _active.Remove(name);
         _active.Add(name);
-        Rebuild();
+        foreach (var (addr, fn) in overlay.Functions)
+            _funcMap[addr] = fn;
+
+        if (already) return;
         Runtime.OverlayLog.Record(name, OverlayEventKind.Loaded);
         Console.WriteLine($"[Dispatcher] loaded overlay: {name}");
     }

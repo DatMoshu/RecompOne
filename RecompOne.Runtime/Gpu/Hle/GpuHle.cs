@@ -7,6 +7,7 @@ public static class GpuHle
 
     public static float WideAspect { get; set; }
     public static float OutputAspect { get; set; } = 4f / 3f;
+    public static float TargetAspect { get; set; } = 4f / 3f;
     public const float BaseAspect = 4f / 3f;
 
     public struct DispRect { public int X, Y, W, H; public long Stamp; public bool Valid; }

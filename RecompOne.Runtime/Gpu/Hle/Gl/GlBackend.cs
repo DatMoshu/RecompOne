@@ -333,6 +333,7 @@ public sealed class GlBackend : IGpuBackend
             {
                 FillRtFull(rt, color15);
                 rt.Dirty = false;
+                rt.LastDrawFrame = _frame;
             }
             else SyncRtFromVram(rt, x, y, w, h);
         }

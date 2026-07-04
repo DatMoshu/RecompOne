@@ -49,7 +49,7 @@ internal static class HostWindow
                 VSync = false,
                 UpdatesPerSecond = 0,
                 FramesPerSecond = 0,
-                WindowState = ConfigManager.Game.Fullscreen ? WindowState.Fullscreen : WindowState.Normal,
+                WindowState = ConfigManager.View.Fullscreen ? WindowState.Fullscreen : WindowState.Normal,
                 API = new GraphicsAPI(ContextAPI.OpenGL, ContextProfile.Core, ContextFlags.Default, new APIVersion(4, 5)),
             };
             _window = Silk.NET.Windowing.Window.Create(options);
@@ -82,9 +82,9 @@ internal static class HostWindow
         }
         if (InputManager.ConsumeFullscreenToggle())
         {
-            ConfigManager.Game.Fullscreen = !ConfigManager.Game.Fullscreen;
-            SetFullscreen(ConfigManager.Game.Fullscreen);
-            ConfigManager.SaveGame();
+            ConfigManager.View.Fullscreen = !ConfigManager.View.Fullscreen;
+            SetFullscreen(ConfigManager.View.Fullscreen);
+            ConfigManager.SaveView(PanelManager.Panels);
         }
         _window.DoRender();
     }
@@ -150,8 +150,12 @@ internal static class HostWindow
         PanelManager.Register(new RamHexPanel());
         PanelManager.Register(new DmaViewerPanel());
         PanelManager.Register(new OverlayEventsPanel());
-        PanelManager.Register(new ConfigPanel());
+        PanelManager.Register(new SettingsPopup());
         PanelManager.Register(new AboutPopup());
+
+        SettingsRegistry.Register(new InputSettingsSection());
+        SettingsRegistry.Register(new DisplaySettingsSection());
+        SettingsRegistry.Register(new AudioSettingsSection());
 
         _discPicker = new DiscPickerPopup();
         PanelManager.Register(_discPicker);

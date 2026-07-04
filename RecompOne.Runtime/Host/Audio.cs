@@ -22,6 +22,7 @@ internal static unsafe class Audio
     static Thread? _mixerThread;
     static Spu? _spu;
     static volatile bool _running;
+    static float _masterVolume = 1.0f;
 
     public static void Initialize()
     {
@@ -39,6 +40,7 @@ internal static unsafe class Audio
             _alc.MakeContextCurrent(_context);
 
             _source = _al.GenSource();
+            _al.SetSourceProperty(_source, SourceFloat.Gain, _masterVolume);
             fixed (uint* ptr = _buffers)
                 _al.GenBuffers(NumBuffers, ptr);
 
@@ -65,6 +67,13 @@ internal static unsafe class Audio
     public static void Attach(Spu? spu)
     {
         if (spu != null) _spu = spu;
+    }
+
+    public static void SetMasterVolume(float volume)
+    {
+        _masterVolume = Math.Clamp(volume, 0f, 1f);
+        if (_al != null && _source != 0)
+            _al.SetSourceProperty(_source, SourceFloat.Gain, _masterVolume);
     }
 
     static void MixerLoop()
