@@ -156,7 +156,7 @@ public sealed class Spu
                 0x6 => v.StartAddr,
                 0x8 => v.AdsrLo,
                 0xA => v.AdsrHi,
-                0xC => (ushort)v.AdsrVol,
+                0xC => v.Phase == AdsrPhase.Attack && v.AdsrVol == 0 ? (ushort)1 : (ushort)v.AdsrVol,
                 0xE => v.RepeatAddr,
                 _ => 0
             };
@@ -262,6 +262,8 @@ public sealed class Spu
             v.SampleIndex = 28;
             v.PitchCounter = 0;
             v.Old = v.Older = 0;
+            Array.Clear(v.Ring);
+            v.RingPos = 0;
             v.EndX = false;
             _endx &= ~(1u << (b + i));
         }
