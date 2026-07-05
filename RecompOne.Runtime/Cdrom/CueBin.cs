@@ -56,9 +56,13 @@ public sealed class CueBin : IDisposable
         int offset = t.SectorSize == 2352
             ? size switch { >= 2340 => 12, >= 2329 => 16, _ => 24 }
             : t.DataOffset;
-        stream.Seek(t.FileOffset + (long)lba * t.SectorSize + offset, SeekOrigin.Begin);
+        long pos = t.FileOffset + (long)lba * t.SectorSize + offset;
         var buf = new byte[size];
-        stream.ReadExactly(buf, 0, Math.Min(size, t.SectorSize - offset));
+        if (lba < 0 || pos >= stream.Length) return buf;
+        int want = Math.Min(size, t.SectorSize - offset);
+        int avail = (int)Math.Min(want, stream.Length - pos);
+        stream.Seek(pos, SeekOrigin.Begin);
+        stream.ReadExactly(buf, 0, avail);
         return buf;
     }
 
