@@ -147,9 +147,9 @@ public sealed class GlBackend : IGpuBackend
         for (int i = 0; i < _rts.Length; i++)
             if (_rts[i] is { } rt && rt.X == fbX && rt.Y == fbY)
             {
-                bool fits = rt.W >= fbW && rt.H >= fbH;
-                bool tight = rt.W - fbW <= FbSlackW && rt.H - fbH <= FbSlackH;
-                if (fits && tight && rt.Margin == GpuHle.WideMargin(rt.W))
+                bool sameW = rt.W == fbW;
+                bool fitsH = rt.H >= fbH && rt.H - fbH <= FbSlackH;
+                if (sameW && fitsH && rt.Margin == GpuHle.WideMargin(rt.W))
                 {
                     rt.Stamp = ++_rtStamp;
                     return rt;
