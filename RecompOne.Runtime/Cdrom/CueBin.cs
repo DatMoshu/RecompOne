@@ -6,6 +6,7 @@ public sealed class CueBin : IDisposable
 
     private readonly List<Track> _tracks = [];
     private readonly Dictionary<string, FileStream> _files = [];
+    private readonly object _ioGate = new();
 
     private CueBin() {}
 
@@ -58,11 +59,15 @@ public sealed class CueBin : IDisposable
             : t.DataOffset;
         long pos = t.FileOffset + (long)lba * t.SectorSize + offset;
         var buf = new byte[size];
-        if (lba < 0 || pos >= stream.Length) return buf;
+        if (lba < 0) return buf;
         int want = Math.Min(size, t.SectorSize - offset);
-        int avail = (int)Math.Min(want, stream.Length - pos);
-        stream.Seek(pos, SeekOrigin.Begin);
-        stream.ReadExactly(buf, 0, avail);
+        lock (_ioGate)
+        {
+            if (pos >= stream.Length) return buf;
+            int avail = (int)Math.Min(want, stream.Length - pos);
+            stream.Seek(pos, SeekOrigin.Begin);
+            stream.ReadExactly(buf, 0, avail);
+        }
         return buf;
     }
 
@@ -70,9 +75,12 @@ public sealed class CueBin : IDisposable
 
     private FileStream GetStream(string path)
     {
-        if (!_files.TryGetValue(path, out var s))
-            _files[path] = s = File.OpenRead(path);
-        return s;
+        lock (_ioGate)
+        {
+            if (!_files.TryGetValue(path, out var s))
+                _files[path] = s = File.OpenRead(path);
+            return s;
+        }
     }
 
     private static long MsfToSectors(string msf)
