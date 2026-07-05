@@ -33,6 +33,7 @@ internal static unsafe class InputManager
         try
         {
             _sdl = Sdl.GetApi();
+            _sdl.SetHint("SDL_JOYSTICK_RAWINPUT", "0");
             _sdl.InitSubSystem(Sdl.InitGamecontroller);
             TryOpenController();
         }
