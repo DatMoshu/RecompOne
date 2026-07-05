@@ -50,6 +50,14 @@ public static class FunctionDetector
                 entries.Add(instr.JumpTarget);
         }
 
+        foreach (var instr in all)
+        {
+            uint w = instr.Word;
+            if ((w & 3) != 0 || w < codeStart || w >= codeEnd) continue;
+            int ti = InstrIndex(all, w);
+            if (ti >= 0 && IsPrologue(all[ti])) entries.Add(w);
+        }
+
         var sorted = entries.Where(e => e >= codeStart && e < codeEnd).OrderBy(e => e).ToList();
         var funcs = new List<MipsFunction>();
 
@@ -226,6 +234,11 @@ public static class FunctionDetector
             if (IsFunctionEnd(all, startIdx, i)) return true;
         }
         return false;
+    }
+
+    static bool IsPrologue(MipsInstruction i)
+    {
+        return (i.Word >> 26) == 9 && i.Rs == 29 && i.Rt == 29 && i.ImmS < 0;
     }
 
     static bool SliceHasUnknownInstruction(MipsInstruction[] all, int startIdx, int endIdx)
