@@ -12,8 +12,17 @@ internal static unsafe class InputManager
     static GameController* _controller;
 
     const int AxisThreshold = 8000;
+    const int StickThreshold = 16000;
     const int LeftTrigger = 100;
     const int RightTrigger = 101;
+    const int LeftStickLeft = 102;
+    const int LeftStickRight = 103;
+    const int LeftStickUp = 104;
+    const int LeftStickDown = 105;
+    const int RightStickLeft = 106;
+    const int RightStickRight = 107;
+    const int RightStickUp = 108;
+    const int RightStickDown = 109;
     static bool _topBarToggle;
     static bool _fullscreenToggle;
 
@@ -59,8 +68,28 @@ internal static unsafe class InputManager
                 return b;
         if (_sdl.GameControllerGetAxis(_controller, GameControllerAxis.Triggerleft)  > AxisThreshold) return LeftTrigger;
         if (_sdl.GameControllerGetAxis(_controller, GameControllerAxis.Triggerright) > AxisThreshold) return RightTrigger;
+        for (int b = LeftStickLeft; b <= RightStickDown; b++)
+        {
+            var (axis, positive) = AxisBinding(b);
+            short v = _sdl.GameControllerGetAxis(_controller, axis);
+            if (positive ? v > StickThreshold : v < -StickThreshold) return b;
+        }
         return null;
     }
+
+    static bool IsStickBinding(int b) => b is >= LeftStickLeft and <= RightStickDown;
+
+    static (GameControllerAxis Axis, bool Positive) AxisBinding(int b) => b switch
+    {
+        LeftStickLeft   => (GameControllerAxis.Leftx,  false),
+        LeftStickRight  => (GameControllerAxis.Leftx,  true),
+        LeftStickUp     => (GameControllerAxis.Lefty,  false),
+        LeftStickDown   => (GameControllerAxis.Lefty,  true),
+        RightStickLeft  => (GameControllerAxis.Rightx, false),
+        RightStickRight => (GameControllerAxis.Rightx, true),
+        RightStickUp    => (GameControllerAxis.Righty, false),
+        _               => (GameControllerAxis.Righty, true),
+    };
 
     public static void Shutdown()
     {
@@ -135,6 +164,13 @@ internal static unsafe class InputManager
             else if (binding == RightTrigger)
             {
                 if (_sdl.GameControllerGetAxis(_controller, GameControllerAxis.Triggerright) > AxisThreshold)
+                    s &= (ushort)~bit;
+            }
+            else if (IsStickBinding(binding))
+            {
+                var (axis, positive) = AxisBinding(binding);
+                short v = _sdl.GameControllerGetAxis(_controller, axis);
+                if (positive ? v > StickThreshold : v < -StickThreshold)
                     s &= (ushort)~bit;
             }
             else if (_sdl.GameControllerGetButton(_controller, (GameControllerButton)binding) != 0)

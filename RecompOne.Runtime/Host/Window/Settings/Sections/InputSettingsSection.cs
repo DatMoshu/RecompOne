@@ -157,6 +157,14 @@ internal sealed class InputSettingsSection : ISettingsSection
         14 => "D-Right",
         100 => "L2 (LTrigger)",
         101 => "R2 (RTrigger)",
+        102 => "LStick Left",
+        103 => "LStick Right",
+        104 => "LStick Up",
+        105 => "LStick Down",
+        106 => "RStick Left",
+        107 => "RStick Right",
+        108 => "RStick Up",
+        109 => "RStick Down",
         _ => $"Btn {b}",
     };
 }
