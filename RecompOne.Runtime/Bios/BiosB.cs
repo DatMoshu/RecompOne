@@ -54,6 +54,14 @@ public static class BiosB
         DeliverEventIntr(c, m, 0xF0000011u, spec);
     }
 
+    static void NewCard(CpuContext c, IMemory m)
+    {
+        // _new_card re-initializes the card driver for a fresh access; the game
+        // calls it when creating a save. Report the card ready so New Game commits.
+        CardComplete(c, m, c.A0);
+        c.V0 = 1u;
+    }
+
     static void CardRead(CpuContext c, IMemory m)
     {
         var card = (c.A0 & 0x10u) != 0 ? Runtime.CardB : Runtime.CardA;
@@ -187,7 +195,7 @@ public static class BiosB
             case 0x4D: break;
             case 0x4E: CardWrite(c, m); break;
             case 0x4F: CardRead(c, m); break;
-            case 0x50: break;
+            case 0x50: NewCard(c, m); break; // _new_card: reset card driver state, ack complete
             case 0x51: c.V0 = KromFont.Krom2RawAdd(c.A0); break;
             case 0x53: c.V0 = KromFont.Krom2Offset(c.A0); break;
             case 0x54: c.V0 = BiosA.LastErrno; break;
