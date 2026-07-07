@@ -205,6 +205,7 @@ public static class BiosB
 
     static uint OpenEvent(uint @class, uint spec, uint mode, uint func)
     {
+        Log.Bios($"OpenEvent class=0x{@class:X8} spec=0x{spec:X4} mode=0x{mode:X4} func=0x{func:X8}");
         for (int i = 0; i < MaxEvents; i++)
         {
             if (_evCBs[i].Status == 0u)
