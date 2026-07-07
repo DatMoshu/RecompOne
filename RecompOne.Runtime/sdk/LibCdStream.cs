@@ -120,9 +120,14 @@ public static class LibCdStream
 
     static byte ToBcd(int n) => (byte)(((n / 10) << 4) + (n % 10));
 
-    internal static void OnReadStream(int lba)
+    static volatile float _sectorsPerSecond = 75f;
+
+    internal static void OnReadStream(int lba) => OnReadStream(lba, LibCd.SectorsPerSecond);
+
+    internal static void OnReadStream(int lba, double sectorsPerSecond)
     {
         if (!InUse) return;
+        _sectorsPerSecond = (float)sectorsPerSecond;
         _pendingLba = lba;
         _reading = true;
         EnsureThread();
@@ -181,7 +186,7 @@ public static class LibCdStream
             int n = Read16(sec, 14);
             if (n <= 0 || n > _slots) { _streamLba++; continue; }
 
-            double delivered = _clock.Elapsed.TotalSeconds * LibCd.SectorsPerSecond;
+            double delivered = _clock.Elapsed.TotalSeconds * _sectorsPerSecond;
             if ((_streamLba - _streamStartLba) + n > delivered) { Thread.Sleep(1); continue; }
 
             int start;

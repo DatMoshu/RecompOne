@@ -99,7 +99,7 @@ public static class LibDs
     {
         _seekLba = ReadLoc(m, c.A0);
         Log.Sdk($"DsReadS lba={_seekLba} mode=0x{c.A1:X}");
-        LibCdStream.OnReadStream(_seekLba);
+        LibCdStream.OnReadStream(_seekLba, (c.A1 & 0x80) != 0 ? 150.0 : 75.0);
         c.V0 = 1;
     }
 
@@ -192,7 +192,7 @@ public static class LibDs
             case 0x1B: // ReadS
                 _readActive = true;
                 Dispatcher.LoadByLba(_seekLba);
-                LibCdStream.OnReadStream(_seekLba);
+                LibCdStream.OnReadStream(_seekLba, (_mode & 0x80) != 0 ? 150.0 : 75.0);
                 break;
             case 0x08: // Stop
             case 0x09: // Pause
