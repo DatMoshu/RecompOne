@@ -82,8 +82,9 @@ public static class LibDs
 
     public static void DsReady(CpuContext c, IMemory m)
     {
+        // while a ReadN is active every poll has a sector waiting for DsGetSector
         if (ValidPtr(c.A1)) WriteResult(m, c.A1);
-        c.V0 = (uint)_lastIntr;
+        c.V0 = _readActive ? (uint)DataReady : (uint)_lastIntr;
     }
 
     public static void DsQueueLen(CpuContext c, IMemory m) => c.V0 = 0;
@@ -119,7 +120,22 @@ public static class LibDs
         c.V0 = 0; // no sectors remaining, read completed inline
     }
 
-    public static void DsGetSector(CpuContext c, IMemory m) => LibCd.CdGetSector(c, m);
+    public static void DsGetSector(CpuContext c, IMemory m)
+    {
+        // a0 = dest, a1 = word count; delivers the sector at the current read
+        // position and advances it (the ReadN + DsReady + DsGetSector pump)
+        uint madr = c.A0;
+        int words = (int)c.A1;
+        Dispatcher.LoadByLba(_seekLba);
+        byte[] data;
+        lock (LibCd.DiscLock) data = Runtime.Cd!.ReadSectorData(_seekLba, 2048);
+        int bytes = Math.Min(data.Length, words * 4);
+        for (int j = 0; j < bytes; j++)
+            m.WriteU8(madr + (uint)j, data[j]);
+        Log.Sdk($"DsGetSector lba={_seekLba} dst=0x{madr:X8} words={words}");
+        _seekLba++;
+        c.V0 = 1;
+    }
     public static void DsDataSync(CpuContext c, IMemory m) => c.V0 = 0;
     public static void DsSearchFile(CpuContext c, IMemory m) => LibCd.CdSearchFile(c, m);
 
@@ -160,7 +176,13 @@ public static class LibDs
                 break;
             case 0x06: // ReadN
             case 0x1B: // ReadS
+                _readActive = true;
                 Dispatcher.LoadByLba(_seekLba);
+                break;
+            case 0x08: // Stop
+            case 0x09: // Pause
+            case 0x0A: // Init
+                _readActive = false;
                 break;
         }
 
@@ -173,6 +195,7 @@ public static class LibDs
     static bool ValidPtr(uint p) => p != 0 && p != 0xFFFFFFFF;
 
     static int _seekLba;
+    static bool _readActive;
 
     static void InvokeCallback(uint func, int intr)
     {
@@ -195,6 +218,7 @@ public static class LibDs
         _com = 0;
         _mode = 0;
         _lastIntr = Complete;
+        _readActive = false;
         _cbSync = _cbReady = _cbRead = _cbData = 0;
         Array.Clear(_lastResult);
     }
