@@ -74,8 +74,12 @@ public static class LibCdStream
 
     public static void StSetMask(CpuContext c, IMemory m) { c.V0 = 0; Log.Sdk("StSetMask"); }
 
+    static int _getNextLog;
+    static int _feedLog;
     public static void StGetNext(CpuContext c, IMemory m)
     {
+        if (Log.SdkOn && (_getNextLog++ % 200) == 0)
+            Log.Sdk($"StGetNext active={_active} reading={_reading} ready={_ready.Count} streamLba={_streamLba} pending={_pendingLba} inUse={InUse} slots={_slots}");
         if (!_active) { c.V0 = 1; return; }
 
         lock (_lock)
@@ -179,6 +183,9 @@ public static class LibCdStream
             byte[] sec;
             try { lock (LibCd.DiscLock) sec = cd.ReadSectorData(_streamLba, 2336); }
             catch { Thread.Sleep(2); continue; }
+
+            if (Log.SdkOn && (_feedLog++ % 40) == 0)
+                Log.Sdk($"feed lba={_streamLba} sub2=0x{sec[2]:X2} m8=0x{Read16(sec,8):X4} w12=0x{Read16(sec,12):X4} n14={Read16(sec,14)}");
 
             if ((sec[2] & 0x04) != 0) { XaAudio.DecodeSector(sec, 8, sec[3]); _streamLba++; continue; }
             if (Read16(sec, 8) != VideoMagic || Read16(sec, 12) != 0) { _streamLba++; continue; }
