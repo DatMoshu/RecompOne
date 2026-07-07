@@ -101,7 +101,15 @@ public static class OverlayWriter
             if (config.LinearSweep)
                 SweepFunctions(funcs, mainInstrs, elfInfo?.NoTypeSymbols ?? [], "main");
 
-            if (elfInfo != null) AnalyzeJumpTables(funcs, elfInfo, "main");
+            // analyze jump tables even without an elf/map (linear-sweep games):
+            // the table words live in the loaded exe image, readable from TextData
+            var jtInfo = elfInfo ?? new FunctionInfo
+            {
+                LoadAddress = mainExe.Destination,
+                TextBase = mainExe.Destination,
+                TextData = mainExe.Code,
+            };
+            AnalyzeJumpTables(funcs, jtInfo, "main");
 
             ApplyStubsAndIgnored(funcs, config.Stubs, config.Ignored);
             overlayResults.Add(new OverlayResult("main", funcs, -1));
