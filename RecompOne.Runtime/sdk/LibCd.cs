@@ -240,7 +240,7 @@ public static class LibCd
     public static void CdReadCallback(CpuContext c, IMemory m) { c.V0 = _cbData; _cbData = c.A0; }
     public static void CdDataCallback(CpuContext c, IMemory m) { c.V0 = _cbData; _cbData = c.A0; }
 
-    public static void CdStatus(CpuContext c, IMemory m) => c.V0 = _status;
+    public static void CdStatus(CpuContext c, IMemory m) => c.V0 = EffectiveStatus();
     public static void CdMode(CpuContext c, IMemory m) => c.V0 = _mode;
     public static void CdLastCom(CpuContext c, IMemory m) => c.V0 = _com;
     public static void CdMix(CpuContext c, IMemory m) => c.V0 = 1;
@@ -330,11 +330,13 @@ public static class LibCd
                 break;
         }
 
-        _lastResult[0] = _status;
+        _lastResult[0] = EffectiveStatus();
         for (int i = 1; i < _lastResult.Length; i++) _lastResult[i] = 0;
         if (result != 0) WriteResult(m, result);
         return 0;
     }
+
+    static byte EffectiveStatus() => (byte)(_status | (Runtime.Cd?.ShellStatusBits() ?? 0));
 
     static int SyncResult(IMemory m, uint result)
     {

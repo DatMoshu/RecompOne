@@ -1,4 +1,5 @@
 using ImGuiNET;
+using RecompOne.Runtime.Cdrom;
 using RecompOne.Runtime.Config;
 
 namespace RecompOne.Runtime.Host.Window;
@@ -22,6 +23,17 @@ internal static class MainMenuBar
         {
             if (ImGui.MenuItem("Settings..."))
                 if (PanelManager.Get<SettingsPopup>() is { } popup) popup.IsOpen = true;
+
+            if (DiscManager.Discs.Count > 1 && ImGui.BeginMenu("Swap Disc"))
+            {
+                for (int i = 0; i < DiscManager.Discs.Count; i++)
+                {
+                    var label = $"Disc {i + 1}: {Path.GetFileNameWithoutExtension(DiscManager.Discs[i])}";
+                    if (ImGui.MenuItem(label, null, DiscManager.Current == i) && DiscManager.Current != i)
+                        DiscManager.Swap(i);
+                }
+                ImGui.EndMenu();
+            }
 
             ImGui.Separator();
 
