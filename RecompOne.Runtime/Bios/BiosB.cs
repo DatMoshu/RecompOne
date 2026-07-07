@@ -17,6 +17,8 @@ public static class BiosB
     public static uint IntrEnvInInterruptAddr = 0u;
 
     static uint _padBuf;
+    static uint _padBufA, _padBufB;
+    static bool _padStarted;
 
     public static void DeliverEvent(uint @class, uint spec)
     {
@@ -86,14 +88,27 @@ public static class BiosB
     
     static void PadRead(IMemory m)
     {
-        if (_padBuf == 0) return;
         ushort s = Hardware.Controller.State;
-        ushort swapped = (ushort)((s >> 8) | (s << 8));
-        m.WriteU32(_padBuf,     0xFFFF0000u | swapped);
-        m.WriteU8(_padBuf + 4, Hardware.Controller.RightX);
-        m.WriteU8(_padBuf + 5, Hardware.Controller.RightY);
-        m.WriteU8(_padBuf + 6, Hardware.Controller.LeftX);
-        m.WriteU8(_padBuf + 7, Hardware.Controller.LeftY);
+        if (_padBuf != 0)
+        {
+            ushort swapped = (ushort)((s >> 8) | (s << 8));
+            m.WriteU32(_padBuf,     0xFFFF0000u | swapped);
+            m.WriteU8(_padBuf + 4, Hardware.Controller.RightX);
+            m.WriteU8(_padBuf + 5, Hardware.Controller.RightY);
+            m.WriteU8(_padBuf + 6, Hardware.Controller.LeftX);
+            m.WriteU8(_padBuf + 7, Hardware.Controller.LeftY);
+        }
+        // standard InitPad(B12)/StartPad(B13) buffers: raw pad response block,
+        // byte0 = 0 connected, byte1 = 0x41 digital pad, bytes 2-3 = buttons (active low)
+        if (_padStarted && _padBufA != 0)
+        {
+            m.WriteU8(_padBufA + 0, 0);
+            m.WriteU8(_padBufA + 1, 0x41);
+            m.WriteU8(_padBufA + 2, (byte)(s & 0xFF));
+            m.WriteU8(_padBufA + 3, (byte)(s >> 8));
+        }
+        if (_padStarted && _padBufB != 0)
+            m.WriteU8(_padBufB + 0, 0xFF); // nothing in port 2
     }
 
     public static void RefreshPad(IMemory m) => PadRead(m);
@@ -120,9 +135,9 @@ public static class BiosB
             case 0x0F: CloseTh(c.A0); c.V0 = 1u; break;
             case 0x10: break;
             case 0x11: break;
-            case 0x12: break;
-            case 0x13: break;
-            case 0x14: break;
+            case 0x12: _padBufA = c.A0; _padBufB = c.A2; c.V0 = 1u; break; // InitPad(buf1,siz1,buf2,siz2)
+            case 0x13: _padStarted = true; c.V0 = 1u; break;              // StartPad
+            case 0x14: _padStarted = false; c.V0 = 1u; break;             // StopPad
             case 0x15: _padBuf = c.A1; break;
             case 0x16: PadRead(m); break;
             case 0x17: break;
