@@ -6,9 +6,11 @@ public sealed class CueFs : IDisposable
 
     private readonly CueBin _bin;
 
+    public string CuePath { get; private set; } = "";
+
     private CueFs(CueBin bin) => _bin = bin;
 
-    public static CueFs Open(string cuePath) => new(CueBin.Open(cuePath));
+    public static CueFs Open(string cuePath) => new(CueBin.Open(cuePath)) { CuePath = cuePath };
 
     public byte[] ReadFile(string path)
     {

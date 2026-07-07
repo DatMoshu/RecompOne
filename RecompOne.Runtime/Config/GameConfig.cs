@@ -44,6 +44,7 @@ public class GamepadBindings
 public class GameConfig
 {
     public string CdPath { get; set; } = "";
+    public List<string> Discs { get; set; } = [];
     public float MasterVolume { get; set; } = 1.0f;
     public bool Muted { get; set; } = false;
     public KeyBindings Keys { get; set; } = new();

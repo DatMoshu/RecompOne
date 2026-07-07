@@ -6,8 +6,10 @@ namespace RecompOne.Runtime.Cdrom;
 
 public sealed class CdController
 {
-    private readonly CueFs _fs;
+    private CueFs _fs;
     private readonly IMemory _m;
+    private long _shellOpenUntil;
+    private bool _shellLatch;
 
     private byte _index;
     private readonly Queue<byte> _paramFifo = new();
@@ -30,6 +32,7 @@ public sealed class CdController
         BiosA.SetFs(fs);
         BiosA.SetCd(this);
         Runtime.Cd = this;
+        DiscManager.InitFromBootDisc(fs.CuePath);
     }
 
     public void LoadToMemory(string path, uint address, int offset = 0, int length = -1)
@@ -240,6 +243,34 @@ public sealed class CdController
     public CueFs Fs => _fs;
     public byte DriveStatusByte() => DriveStatus();
 
+    public void SwapDisc(string cuePath)
+    {
+        var newFs = CueFs.Open(cuePath);
+        lock (Sdk.LibCd.DiscLock)
+        {
+            _reading = false;
+            _streamPending = false;
+            _dataReady = false;
+            _dataFifoPos = 0;
+            var old = _fs;
+            _fs = newFs;
+            BiosA.SetFs(newFs);
+            old.Dispose();
+        }
+        _shellOpenUntil = Environment.TickCount64 + 1000;
+        _shellLatch = true;
+        RecompOne.Runtime.Log.Cd($"disc swapped -> {Path.GetFileName(cuePath)}");
+    }
+
+    // shell-open flag (0x10) that games poll via GetStat to detect a disc change,
+    // stays set while the virtual lid is open, then is reported once more after close
+    public byte ShellStatusBits()
+    {
+        if (Environment.TickCount64 < _shellOpenUntil) return 0x10;
+        if (_shellLatch) { _shellLatch = false; return 0x10; }
+        return 0;
+    }
+
     public byte[] ReadSectorData(int lba)
     {
         _seekLba = lba;
@@ -281,7 +312,7 @@ public sealed class CdController
         QueueIrq(2, [DriveStatus()]);
     }
 
-    private static byte DriveStatus() => 0x02;
+    private byte DriveStatus() => (byte)(0x02 | ShellStatusBits());
 
     private static int BcdToLba(byte mm, byte ss, byte ff)
     {
