@@ -234,11 +234,28 @@ public static class OverlayWriter
     {
         if (entries.Length == 0) return;
 
+        var byStart = funcs.GroupBy(f => f.Start).ToDictionary(g => g.Key, g => g.First());
+        int renamed = 0;
         var have = new HashSet<uint>(funcs.Select(f => f.Start));
-        var missing = entries
-            .Select(f => (Addr: Convert.ToUInt32(f.Address, 16), f.Name))
-            .Where(e => have.Add(e.Addr))
-            .ToList();
+        var missing = new List<(uint Addr, string? Name)>();
+        foreach (var e in entries)
+        {
+            uint addr = Convert.ToUInt32(e.Address, 16);
+            if (have.Add(addr))
+            {
+                missing.Add((addr, e.Name));
+            }
+            else if (e.Name != null && byStart.TryGetValue(addr, out var existingFunc) && existingFunc.Name != e.Name)
+            {
+                // function was already discovered under an auto name, config name wins
+                // (needed so sdk reimplementations can match by name)
+                existingFunc.Name = e.Name;
+                existingFunc.EmittedName = e.Name;
+                renamed++;
+            }
+        }
+        if (renamed > 0)
+            Console.WriteLine($"[Recompiler] renamed {renamed} existing function(s) from config in {overlayName}");
         if (missing.Count == 0) return;
 
         var extras = FunctionDetector.DetectFromAddresses(instrs, missing.Select(e => (e.Addr, e.Name)), funcs, overlayName);
