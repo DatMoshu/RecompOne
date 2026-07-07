@@ -23,7 +23,7 @@ public static class SdkPatches
             "DsReadSync", "DsGetSector", "DsDataSync", "DsSearchFile",
             "DsPosToInt", "DsIntToPos", "DsSyncCallback", "DsReadyCallback",
             "DsReadCallback", "DsDataCallback", "DsDiskReady", "DsGetDiskType",
-            "DsReadBreak", "DsClose", "DsLastPos",
+            "DsReadBreak", "DsClose", "DsLastPos", "DsReadS",
         }),
         ("RecompOne.Runtime.Sdk.LibEtc", new[]
         {

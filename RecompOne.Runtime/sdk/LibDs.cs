@@ -92,6 +92,17 @@ public static class LibDs
     public static void DsLastCom(CpuContext c, IMemory m) => c.V0 = _com;
     public static void DsMix(CpuContext c, IMemory m) => c.V0 = 1;
 
+    // Square's libds ReadS helper (streaming start): a0 = DslLOC* pos, a1 = mode.
+    // installs ring callbacks and issues CdlReadS through the packet core on real
+    // hardware; here it hands the stream position to the LibCdStream ring engine
+    public static void DsReadS(CpuContext c, IMemory m)
+    {
+        _seekLba = ReadLoc(m, c.A0);
+        Log.Sdk($"DsReadS lba={_seekLba} mode=0x{c.A1:X}");
+        LibCdStream.OnReadStream(_seekLba);
+        c.V0 = 1;
+    }
+
     public static void DsRead(CpuContext c, IMemory m)
     {
         int lba = ReadLoc(m, c.A0);
@@ -175,14 +186,19 @@ public static class LibDs
                 if (ValidPtr(param)) _mode = m.ReadU8(param);
                 break;
             case 0x06: // ReadN
+                _readActive = true;
+                Dispatcher.LoadByLba(_seekLba);
+                break;
             case 0x1B: // ReadS
                 _readActive = true;
                 Dispatcher.LoadByLba(_seekLba);
+                LibCdStream.OnReadStream(_seekLba);
                 break;
             case 0x08: // Stop
             case 0x09: // Pause
             case 0x0A: // Init
                 _readActive = false;
+                LibCdStream.OnStopStream();
                 break;
         }
 
