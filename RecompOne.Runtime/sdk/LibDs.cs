@@ -131,21 +131,18 @@ public static class LibDs
         c.V0 = 0; // no sectors remaining, read completed inline
     }
 
+    // NOTE: 0x80080AC4 is MISNAMED "DsGetSector" in the map — it is actually
+    // DsMix/CdMix (CD-audio -> SPU volume apply). A0 is a 4-byte CdlATV *input*
+    // {LtoL, LtoR, RtoR, RtoL}; it is never an output buffer. The real function
+    // only writes the CD controller's index-banked volume MMIO regs and returns 1.
+    // (The prior HLE copied a 2048-byte sector into A0, smashing the caller's
+    // stack frame.) The actual sector/DMA fetch primitives live at 0x80080AE4 /
+    // 0x80080B04. Here we read the 4 volume bytes and return 1; we do not write A0.
     public static void DsGetSector(CpuContext c, IMemory m)
     {
-        // a0 = dest, a1 = word count; delivers the sector at the current read
-        // position and advances it (the ReadN + DsReady + DsGetSector pump)
-        uint madr = c.A0;
-        int words = (int)c.A1;
-        Dispatcher.LoadByLba(_seekLba);
-        byte[] data;
-        lock (LibCd.DiscLock) data = Runtime.Cd!.ReadSectorData(_seekLba, 2048);
-        int bytes = Math.Min(data.Length, words * 4);
-        for (int j = 0; j < bytes; j++)
-            m.WriteU8(madr + (uint)j, data[j]);
-        Log.Sdk($"DsGetSector lba={_seekLba} dst=0x{madr:X8} words={words}");
-        _seekLba++;
-        c.V0 = 1;
+        if (ValidPtr(c.A0))
+            Log.Sdk($"DsMix (mislabelled DsGetSector) atv[0..3]={m.ReadU8(c.A0)},{m.ReadU8(c.A0 + 1)},{m.ReadU8(c.A0 + 2)},{m.ReadU8(c.A0 + 3)}");
+        c.V0 = 1; // CD-audio volume apply is a no-op here; must NOT write to A0
     }
     public static void DsDataSync(CpuContext c, IMemory m) => c.V0 = 0;
     public static void DsSearchFile(CpuContext c, IMemory m) => LibCd.CdSearchFile(c, m);

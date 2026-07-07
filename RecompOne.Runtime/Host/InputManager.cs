@@ -62,33 +62,29 @@ internal static unsafe class InputManager
     }
 
     // Debug bypass (--newgame): auto-drive the front-end into New Game loading.
-    // Skips intro/press-start with START, then navigates to New Game and confirms
-    // with CROSS, retrying until the main scene leaves the attract root. PE1-specific.
+    // The whole front-end (title, press-start, new-game menu, slot select, tutorial
+    // menu) reads scene state 0x00000000; only the committed game-start scene reads
+    // 0xA80830C8. Since sub-screens are indistinguishable by state, run a repeating
+    // press/release cycle of the buttons a verified manual drive used — START (skip
+    // intro/FMV, pass press-start), then UP immediately before CROSS (so a menu that
+    // defaults to Tutorial moves to Start Game before confirming), plus an extra
+    // CROSS for the save-slot prompt — and stop the instant the game commits.
     static int _fsCounter;
     static void ApplyFastStart()
     {
         uint state = Runtime.Mem?.ReadU32(0x8009D280u) ?? 0u;
-        // The whole front-end (press-start, new-game menu, slot select, tutorial
-        // menu) reads state 0x00000000; only the committed game-start scene reads
-        // 0xA80830C8. So drive until state is the commit ID, then stop.
         if (state == 0xA80830C8u) { Runtime.FastStart = false; return; }  // committed to New Game
         int f = ++_fsCounter;
         ushort s = 0xFFFF;
         void Hold(ushort bit) => s &= (ushort)~bit;
-        // Sub-screens can't be told apart by state, so run a fixed timed sequence
-        // matching a verified manual drive: intro-skip, then a repeating
-        // Cross/Circle/Cross confirm chain that ends every menu on Up→Cross.
-        if (f < 520) { if (f % 30 < 10) { Hold(Controller.Cross); Hold(Controller.Start); } } // skip intro/FMV
-        else
-        {
-            int g = (f - 520) % 180;                                      // ~3s cycle, press each step then release
-            if (g < 12) Hold(Controller.Start);                          // press-start (needs START)
-            else if (g < 48) Hold(Controller.Cross);                     // confirm New Game (g<24 release)
-            else if (g < 60) Hold(Controller.Circle);                    // open select-slot
-            else if (g < 96) Hold(Controller.Cross);                     // confirm slot (g<72 release)
-            else if (g < 120) Hold(Controller.Up);                       // move Tutorial -> Start Game
-            else if (g < 156) Hold(Controller.Cross);                    // confirm Start Game (g<132 release)
-        }
+        int g = f % 200;                                 // ~3.3s cycle: press ~0.2s, release ~0.4s between
+        if (g < 12) Hold(Controller.Start);              // skip intro/FMV, pass press-start
+        else if (g < 60) { }                             // release
+        else if (g < 72) Hold(Controller.Up);            // Tutorial -> Start Game (harmless elsewhere)
+        else if (g < 108) { }                            // release
+        else if (g < 120) Hold(Controller.Cross);        // confirm New Game / Start Game
+        else if (g < 156) { }                            // release
+        else if (g < 168) Hold(Controller.Cross);        // confirm save-slot prompt
         Controller.State = s;
     }
 
