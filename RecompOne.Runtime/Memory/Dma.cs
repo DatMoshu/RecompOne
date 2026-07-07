@@ -63,8 +63,10 @@ public sealed class Dma
     void TransferMdecOut(uint madr, uint bcr)
     {
         uint words = WordCount(bcr);
-        for (uint i = 0; i < words; i++)
-            _mem.WriteU32(madr + i * 4u, _mdec.ReadData());
+        var data = new uint[words];
+        for (uint i = 0; i < words; i++) data[i] = _mdec.ReadData();
+        for (uint i = 0; i < words; i++) _mem.WriteU32(madr + i * 4u, data[i]);
+        MdecOutStaging.Push(madr, data);
     }
 
     void TransferGpu(uint madr, uint bcr, uint chcr)
@@ -87,6 +89,13 @@ public sealed class Dma
         else if ((chcr & 1u) != 0)
         {
             uint words = WordCount(bcr);
+            if (MdecOutStaging.Pop(madr) is { } data)
+            {
+                Log.Dma($"ch2 fed from mdec staging madr=0x{madr:X8}");
+                for (uint i = 0; i < words; i++)
+                    _gpu.WriteGp0(i < data.Length ? data[i] : _mem.ReadU32(madr + i * 4u));
+                return;
+            }
             for (uint i = 0; i < words; i++)
                 _gpu.WriteGp0(_mem.ReadU32(madr + i * 4u));
         }
@@ -131,6 +140,7 @@ public sealed class Dma
     {
         bool master = (_dicr & (1u << 23)) != 0;
         bool enabled = (_dicr & (1u << (16 + channel))) != 0;
+        Log.Dma($"complete ch{channel} dicr=0x{_dicr:X8} master={master} enabled={enabled}");
         if (!master || !enabled) return;
         _dicr |= 1u << (24 + channel);
         _raiseIrq();

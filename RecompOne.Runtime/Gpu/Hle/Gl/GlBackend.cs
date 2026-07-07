@@ -476,6 +476,7 @@ public sealed class GlBackend : IGpuBackend
     {
         if (!Ready || w <= 0 || h <= 0) return (0, 0, 0, GpuHle.OutputAspect);
         _frame++;
+        Log.Gpu($"present disp=({dispX},{dispY},{w},{h}) rgb24={rgb24}");
         Flush();
 
         for (int i = 0; i < _rts.Length; i++)
