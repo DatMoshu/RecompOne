@@ -15,6 +15,16 @@ public static class SdkPatches
             "CdReadCallback", "CdDataCallback", "CdStatus", "CdMode",
             "CdLastCom", "CdMix",
         }),
+        ("RecompOne.Runtime.Sdk.LibDs", new[]
+        {
+            "DsInit", "DsReset", "DsFlush", "DsSetDebug", "DsControl",
+            "DsControlF", "DsControlB", "DsCommand", "DsSync", "DsReady",
+            "DsQueueLen", "DsStatus", "DsLastCom", "DsMix", "DsRead",
+            "DsReadSync", "DsGetSector", "DsDataSync", "DsSearchFile",
+            "DsPosToInt", "DsIntToPos", "DsSyncCallback", "DsReadyCallback",
+            "DsReadCallback", "DsDataCallback", "DsDiskReady", "DsGetDiskType",
+            "DsReadBreak", "DsClose", "DsLastPos",
+        }),
         ("RecompOne.Runtime.Sdk.LibEtc", new[]
         {
             "VSync",
