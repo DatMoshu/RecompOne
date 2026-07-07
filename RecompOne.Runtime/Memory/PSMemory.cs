@@ -69,8 +69,17 @@ public sealed class PSMemory : IMemory
         if (phys >= MemoryMap.BiosBase && phys < MemoryMap.BiosBase + MemoryMap.BiosSize)
             return _bios.AsSpan((int)(phys - MemoryMap.BiosBase), size);
 
-        throw new InvalidOperationException($"unmapped address: 0x{address:X8}");
+        // Unmapped access. By default this is a hard error (surfaces real bugs).
+        // With --lenient it degrades like most PS1 emulators (reads 0, writes
+        // discarded) so a single stray pointer doesn't kill the whole port.
+        if (!Dispatch.Dispatcher.LenientCalls)
+            throw new InvalidOperationException($"unmapped address: 0x{address:X8}");
+        if (Log.BiosOn) Log.Bios($"unmapped access 0x{address:X8} size {size}");
+        _oob.AsSpan(0, 8).Clear();
+        return _oob.AsSpan(0, size);
     }
+
+    private readonly byte[] _oob = new byte[8];
 
     private static bool IsCd(uint phys) => phys >= 0x1F801800u && phys <= 0x1F801803u;
     private static bool IsSpu(uint phys) => phys >= 0x1F801C00u && phys < 0x1F801E80u;
