@@ -101,7 +101,24 @@ public static class LibCdStream
 
     public static void StFreeRing(CpuContext c, IMemory m) { c.V0 = 0; Log.Sdk("StFreeRing"); }
 
-    public static void StGetBackloc(CpuContext c, IMemory m) { c.V0 = 0xFFFFFFFFu; Log.Sdk("StGetBackloc"); }
+    public static void StGetBackloc(CpuContext c, IMemory m)
+    {
+        // report the current stream position so a stalled stream restarts where it
+        // left off instead of from the beginning
+        int lba = _streamLba >= 0 ? _streamLba : _streamStartLba;
+        if (c.A0 != 0 && c.A0 != 0xFFFFFFFF && lba >= 0)
+        {
+            int i = lba + 150;
+            m.WriteU8(c.A0, ToBcd(i / 75 / 60));
+            m.WriteU8(c.A0 + 1, ToBcd(i / 75 % 60));
+            m.WriteU8(c.A0 + 2, ToBcd(i % 75));
+            c.V0 = c.A0;
+        }
+        else c.V0 = 0xFFFFFFFFu;
+        Log.Sdk($"StGetBackloc lba={lba}");
+    }
+
+    static byte ToBcd(int n) => (byte)(((n / 10) << 4) + (n % 10));
 
     internal static void OnReadStream(int lba)
     {
