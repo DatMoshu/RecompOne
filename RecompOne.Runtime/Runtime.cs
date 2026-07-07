@@ -14,6 +14,8 @@ public static class Runtime
     public static Spu? Spu;
     public static Cdrom.CdController? Cd;
 
+    public static bool FastStart; // debug: auto-drive the front-end into New Game
+
     public static RunMode Mode { get; private set; } = RunMode.Retail;
     public static void SetMode(RunMode mode) => Mode = mode; //devkit vs retail, devkits reads from sim and has more ram
     public static string CdPath => Config.ConfigManager.Game.CdPath;

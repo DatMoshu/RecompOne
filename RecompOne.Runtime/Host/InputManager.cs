@@ -58,6 +58,29 @@ internal static unsafe class InputManager
         PollGamepadEvents();
         PollKeyboard();
         PollGamepad();
+        if (Runtime.FastStart) ApplyFastStart();
+    }
+
+    // Debug bypass (--newgame): auto-drive the front-end into New Game loading.
+    // Skips intro/press-start with START, then navigates to New Game and confirms
+    // with CROSS, retrying until the main scene leaves the attract root. PE1-specific.
+    static int _fsCounter;
+    static void ApplyFastStart()
+    {
+        uint state = Runtime.Mem?.ReadU32(0x8009D280u) ?? 0u;
+        if (state != 0u && state != 0xA9400048u) { Runtime.FastStart = false; return; } // committed
+        int f = ++_fsCounter;
+        ushort s = 0xFFFF;
+        void Hold(ushort bit) => s &= (ushort)~bit;
+        if (f < 1500) { if (f % 30 < 12) Hold(Controller.Start); }        // skip intro + press-start
+        else
+        {
+            int g = (f - 1500) % 260;                                     // retry loop
+            if (g < 40) { if (g % 20 < 8) Hold(Controller.Up); }          // move to New Game
+            else if (g < 150) { if (g % 20 < 8) Hold(Controller.Cross); } // confirm New Game
+            else { if (g % 20 < 8) Hold(Controller.Cross); }              // confirm save slot
+        }
+        Controller.State = s;
     }
 
     public static int? GetFirstPressedPadButton()
@@ -144,6 +167,11 @@ internal static unsafe class InputManager
         B(cfg.Down,     Controller.Down);
         B(cfg.Left,     Controller.Left);
         B(cfg.Right,    Controller.Right);
+
+        // Make Enter (Start) also act as menu-confirm (Cross): PE1 menus confirm
+        // on Cross, so plain Enter otherwise can't pick New Game/Tutorial.
+        if (Enum.TryParse<Key>(cfg.Start, out var startKey) && kb.IsKeyPressed(startKey))
+            s &= unchecked((ushort)~Controller.Cross);
 
         Controller.State = s;
     }
