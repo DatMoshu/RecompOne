@@ -47,6 +47,7 @@ public static class Runtime
     {
         HostWindow.Present(Gpu);
         Audio.Attach(Spu);
+        Host.DriveRecorder.Tick();
         FrameClock.Throttle();
         Sdk.LibCd.Tick();
         if (Mem != null) { Bios.BiosB.RefreshPad(Mem); Sdk.LibPad.Refresh(Mem); } //is this correct?

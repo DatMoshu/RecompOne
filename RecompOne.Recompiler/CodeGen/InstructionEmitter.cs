@@ -284,7 +284,7 @@ public static class InstructionEmitter
                 sb.AppendLine($"{indent}{{");
                 foreach (uint entry in jtbl.Entries.Distinct())
                     sb.AppendLine($"{indent}    case 0x{entry:X8}u: goto L{entry:X8};");
-                sb.AppendLine($"{indent}    default: Dispatcher.Call(c, m, {RS}); return;");
+                sb.AppendLine($"{indent}    default: Dispatcher.CallKeepSaved(c, m, {RS}); return;");
                 sb.AppendLine($"{indent}}}");
             }
             else
