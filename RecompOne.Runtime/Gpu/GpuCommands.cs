@@ -125,6 +125,7 @@ public sealed partial class Gpu
         _loadH = (int)((_fifo[2] >> 16) & 0xFFFF); if (_loadH == 0) _loadH = 0x200; else _loadH &= 0x1FF; if (_loadH == 0) _loadH = 0x200;
         _loadPx = 0;
         _loadImage = true;
+        Log.Gpu($"imageLoad x={_loadX} y={_loadY} w={_loadW} h={_loadH}");
         HleLoadBegin();
         _fifo.Clear();
     }

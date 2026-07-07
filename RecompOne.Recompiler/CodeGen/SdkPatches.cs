@@ -32,6 +32,7 @@ public static class SdkPatches
         ("RecompOne.Runtime.Sdk.LibGpu", new[]
         {
             "DrawOTag", "DrawSync", "PutDrawEnv", "PutDispEnv",
+            "LoadImage", "StoreImage", "MoveImage", "ClearImage",
         }),
         ("RecompOne.Runtime.Sdk.LibCdStream", new[]
         {

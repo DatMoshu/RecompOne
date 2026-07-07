@@ -27,6 +27,65 @@ public static class LibGpu
 
     public static void DrawSync(CpuContext c, IMemory m) => c.V0 = 0;
 
+    // the real libgpu queues these transfers and drains them paced by hardware;
+    // recompiled, the queue drains too late (source buffers already reused), so
+    // the HLE executes them immediately
+
+    public static void LoadImage(CpuContext c, IMemory m)
+    {
+        var gpu = Runtime.Gpu;
+        if (gpu == null) { c.V0 = 0; return; }
+        short x = S16(m, c.A0), y = S16(m, c.A0 + 2), w = S16(m, c.A0 + 4), h = S16(m, c.A0 + 6);
+        if (w <= 0 || h <= 0) { c.V0 = 0; return; }
+        gpu.WriteGp0(0xA0000000u);
+        gpu.WriteGp0(((uint)(ushort)y << 16) | (ushort)x);
+        gpu.WriteGp0(((uint)(ushort)h << 16) | (ushort)w);
+        int words = (w * h + 1) / 2;
+        var staged = MdecOutStaging.Pop(c.A1);
+        for (uint i = 0; i < words; i++)
+            gpu.WriteGp0(staged != null && i < staged.Length ? staged[i] : m.ReadU32(c.A1 + i * 4u));
+        c.V0 = 0;
+    }
+
+    public static void StoreImage(CpuContext c, IMemory m)
+    {
+        var gpu = Runtime.Gpu;
+        if (gpu == null) { c.V0 = 0; return; }
+        short x = S16(m, c.A0), y = S16(m, c.A0 + 2), w = S16(m, c.A0 + 4), h = S16(m, c.A0 + 6);
+        if (w <= 0 || h <= 0) { c.V0 = 0; return; }
+        gpu.WriteGp0(0xC0000000u);
+        gpu.WriteGp0(((uint)(ushort)y << 16) | (ushort)x);
+        gpu.WriteGp0(((uint)(ushort)h << 16) | (ushort)w);
+        int words = (w * h + 1) / 2;
+        for (uint i = 0; i < words; i++)
+            m.WriteU32(c.A1 + i * 4u, gpu.ReadData());
+        c.V0 = 0;
+    }
+
+    public static void MoveImage(CpuContext c, IMemory m)
+    {
+        var gpu = Runtime.Gpu;
+        if (gpu == null) { c.V0 = 0; return; }
+        short x = S16(m, c.A0), y = S16(m, c.A0 + 2), w = S16(m, c.A0 + 4), h = S16(m, c.A0 + 6);
+        gpu.WriteGp0(0x80000000u);
+        gpu.WriteGp0(((uint)(ushort)y << 16) | (ushort)x);
+        gpu.WriteGp0(((uint)(ushort)c.A2 << 16) | (ushort)c.A1);
+        gpu.WriteGp0(((uint)(ushort)h << 16) | (ushort)w);
+        c.V0 = 0;
+    }
+
+    public static void ClearImage(CpuContext c, IMemory m)
+    {
+        var gpu = Runtime.Gpu;
+        if (gpu == null) { c.V0 = 0; return; }
+        short x = S16(m, c.A0), y = S16(m, c.A0 + 2), w = S16(m, c.A0 + 4), h = S16(m, c.A0 + 6);
+        uint r = c.A1 & 0xFF, g = c.A2 & 0xFF, b = c.A3 & 0xFF;
+        gpu.WriteGp0(0x02000000u | (b << 16) | (g << 8) | r);
+        gpu.WriteGp0(((uint)(ushort)y << 16) | (ushort)x);
+        gpu.WriteGp0(((uint)(ushort)h << 16) | (ushort)w);
+        c.V0 = 0;
+    }
+
     public static void PutDrawEnv(CpuContext c, IMemory m)
     {
         var gpu = Runtime.Gpu;
