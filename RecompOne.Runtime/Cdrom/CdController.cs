@@ -175,13 +175,14 @@ public sealed class CdController
         ClearInInterrupt();
     }
 
-    public void AdvanceStreaming()
+    public bool AdvanceStreaming()
     {
-        if (!_reading || !_streamPending) return;
-        if (_irqFlags != 0 || _pendingIrqs.Count > 0) return;
+        if (!_reading || !_streamPending) return false;
+        if (_irqFlags != 0 || _pendingIrqs.Count > 0) return false;
         _streamPending = false;
         ReadNextSector();
         DeliverImmediate(1, [DriveStatus()]);
+        return true;
     }
 
     private void DeliverImmediate(byte irqType, byte[] response)
@@ -191,6 +192,9 @@ public sealed class CdController
         _irqFlags = irqType;
         _lastIrq = irqType;
         SetInInterrupt(1);
+        // Only sector-ready (INT1) drives the game's CDROM-IRQ handler; command
+        // acks (INT3/INT2/INT5) are consumed by the game's blocking poll path.
+        if (irqType == 1) _m.RaiseIrq(2); // no-op unless HwIrqModel
     }
 
     private void DeliverNext()
@@ -201,6 +205,7 @@ public sealed class CdController
         _irqFlags = irqType;
         _lastIrq = irqType;
         SetInInterrupt(1);
+        if (irqType == 1) _m.RaiseIrq(2);
     }
 
     private byte ReadDataByte()

@@ -60,6 +60,12 @@ public static class Runtime
         if (SoundTimerOn && Cpu != null && Mem != null)
             Bios.BiosB.PumpRootCounter2(Cpu, Mem, 4); // 240Hz sequencer tick (4 per 60fps frame)
         DispatchIrq(0); //using this to dispatch irqs too if necessary, probably not needed after the rest of stuff is reimplemented
+        // MMIO ReadN streaming (BFM): keep feeding sector-ready INT1s and let the
+        // game's CDROM-IRQ handler consume each one. Gated to HwIrqModel so PE1
+        // (libds path, never sets _reading via MMIO) is unaffected.
+        if (Memory.PSMemory.HwIrqModel && Cd != null)
+            for (int i = 0; i < 16 && Cd.AdvanceStreaming(); i++)
+                DispatchIrq(0);
     }
 
     public static void DispatchIrq(int irq)

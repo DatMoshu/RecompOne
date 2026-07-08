@@ -20,4 +20,6 @@ public interface IMemory // https://psx-spx.consoledev.net/memorymap/
     void ZeroRange(uint address, uint length);
 
     void SetCd(Cdrom.CdController cd);
+
+    void RaiseIrq(int bit);
 }

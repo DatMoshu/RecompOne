@@ -18,12 +18,24 @@ public sealed class PSMemory : IMemory
     private readonly Dma _dma;
     private CdController? _cd;
 
+    // Hardware I_STAT/I_MASK interrupt registers. Off by default so BIOS-HLE
+    // games (e.g. PE1) that never read raw 0x1F801070/74 keep plain-memory
+    // behaviour; opted in by games (e.g. BFM) whose interrupt entry reads the
+    // real hardware register and dispatches per pending source bit.
+    public static bool HwIrqModel;
+    private uint _iStat;
+    private uint _iMask;
+
+    // Raise a hardware interrupt source (0=VBLANK,1=GPU,2=CDROM,3=DMA,...);
+    // the source is only serviced once the game unmasks it in I_MASK.
+    public void RaiseIrq(int bit) { if (HwIrqModel) _iStat |= 1u << bit; }
+
     public ReadOnlySpan<byte> Ram => _ram;
     internal byte[] RamBuffer => _ram;
 
     public PSMemory()
     {
-        _dma = new Dma(this, _gpu, _spu, _mdec, () => Runtime.DispatchIrq(3));
+        _dma = new Dma(this, _gpu, _spu, _mdec, () => { RaiseIrq(3); Runtime.DispatchIrq(3); });
         Runtime.Gpu = _gpu;
         Runtime.Spu = _spu;
         Bios.KromFont.InstallInto(_bios);
@@ -84,6 +96,8 @@ public sealed class PSMemory : IMemory
 
     private static bool IsCd(uint phys) => phys >= 0x1F801800u && phys <= 0x1F801803u;
     private static bool IsSpu(uint phys) => phys >= 0x1F801C00u && phys < 0x1F801E80u;
+    private static bool IsIrqStat(uint phys) => phys == 0x1F801070u;
+    private static bool IsIrqMask(uint phys) => phys == 0x1F801074u;
 
     public byte ReadU8(uint address)
     {
@@ -96,6 +110,8 @@ public sealed class PSMemory : IMemory
     {
         uint phys = MemoryMap.ToPhysical(address);
         if (_cd != null && IsCd(phys)) return _cd.Read(phys);
+        if (HwIrqModel && IsIrqStat(phys)) return (ushort)_iStat;
+        if (HwIrqModel && IsIrqMask(phys)) return (ushort)_iMask;
         if (IsSpu(phys)) return _spu.ReadReg16(phys);
         if (Timers.InRange(phys) && _timers.TryRead(phys, out uint tv)) return (ushort)tv;
         var s = Resolve(address, 2);
@@ -110,6 +126,8 @@ public sealed class PSMemory : IMemory
         if (phys == 0x1F801820u) return _mdec.ReadData();
         if (phys == 0x1F801824u) return _mdec.ReadStatus();
         if (phys == 0x1F8010F4u) return _dma.ReadDicr();
+        if (HwIrqModel && IsIrqStat(phys)) return _iStat;
+        if (HwIrqModel && IsIrqMask(phys)) return _iMask;
         if (_cd != null && IsCd(phys)) return _cd.Read(phys);
         if (IsSpu(phys)) return (uint)(_spu.ReadReg16(phys) | (_spu.ReadReg16(phys + 2) << 16));
         if (Timers.InRange(phys) && _timers.TryRead(phys, out uint tv)) return tv;
@@ -132,6 +150,8 @@ public sealed class PSMemory : IMemory
         Watch(phys, value, 2);
         TrackWrite(phys, 2);
         if (_cd != null && IsCd(phys)) { _cd.Write(phys, (byte)value); return; }
+        if (HwIrqModel && IsIrqStat(phys)) { _iStat &= value; return; } // ack: write clears 0-bits
+        if (HwIrqModel && IsIrqMask(phys)) { _iMask = value; return; }
         if (IsSpu(phys)) { _spu.WriteReg16(phys, value); return; }
         if (_timers.TryWrite(phys, value)) return;
         var s = Resolve(address, 2);
@@ -174,6 +194,8 @@ public sealed class PSMemory : IMemory
             return;
         }
         if (_cd != null && IsCd(phys)) { _cd.Write(phys, (byte)value); return; }
+        if (HwIrqModel && IsIrqStat(phys)) { _iStat &= value; return; } // ack: write clears 0-bits
+        if (HwIrqModel && IsIrqMask(phys)) { _iMask = value; return; }
         if (IsSpu(phys)) { _spu.WriteReg16(phys, (ushort)value); _spu.WriteReg16(phys + 2, (ushort)(value >> 16)); return; }
         if (_timers.TryWrite(phys, value)) return;
         var s = Resolve(address, 4);
