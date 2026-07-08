@@ -11,6 +11,9 @@ public static class LibCdStream
     const ushort VideoMagic = 0x0160;
 
     public static bool InUse { get; private set; }
+    public static int MaxFrame;
+    public static int EnqMaxFrame;              // highest STR frame# delivered (end detection)
+    public static void ForceStop() { _active = false; _reading = false; MaxFrame = 0; }
     static uint _statusBase;
     static int _slots;
     static uint _dataBase;
@@ -74,8 +77,24 @@ public static class LibCdStream
 
     public static void StSetMask(CpuContext c, IMemory m) { c.V0 = 0; Log.Sdk("StSetMask"); }
 
+    public static bool FrameLog;
+    static int _frameLogN;
     static int _getNextLog;
     static int _feedLog;
+
+    // When the linear read runs off the end of the STR video data (many consecutive
+    // non-video sectors), loop back to the stream start. This makes the STR frame
+    // number wrap low, which is how the game's player detects end-of-cinematic
+    // (it treats a frame# that drops below the running max as the last frame).
+    static int _skip;
+    const int SkipLimit = 200;
+    static void MaybeLoop()
+    {
+        if (_skip < SkipLimit || _streamStartLba < 0) return;
+        _skip = 0;
+        _streamLba = _streamStartLba;
+        _clock.Restart();
+    }
     public static void StGetNext(CpuContext c, IMemory m)
     {
         if (Log.SdkOn && (_getNextLog++ % 200) == 0)
@@ -97,6 +116,10 @@ public static class LibCdStream
             uint hdrPtr = _statusBase + (uint)(start * HeaderSize);
             m.WriteU32(c.A0, dataPtr);
             m.WriteU32(c.A1, hdrPtr);
+            int fno = m.ReadU16(hdrPtr + 8);
+            if (fno > MaxFrame) MaxFrame = fno;
+            if (FrameLog && (_frameLogN++ % 20) == 0)
+                Console.WriteLine($"[frame] deliver#{_frameLogN} hdr+8=0x{m.ReadU16(hdrPtr + 8):X4} hdr+10=0x{m.ReadU16(hdrPtr + 0x10):X4} hdr+12=0x{m.ReadU16(hdrPtr + 0x12):X4} desc[0x80122468]=0x{m.ReadU16(0x80122468u):X4} thr[0x801227E8]=0x{m.ReadU16(0x801227E8u):X4}");
             _prevStart = start;
             _prevN = n;
             c.V0 = 0;
@@ -187,11 +210,12 @@ public static class LibCdStream
             if (Log.SdkOn && (_feedLog++ % 40) == 0)
                 Log.Sdk($"feed lba={_streamLba} sub2=0x{sec[2]:X2} m8=0x{Read16(sec,8):X4} w12=0x{Read16(sec,12):X4} n14={Read16(sec,14)}");
 
-            if ((sec[2] & 0x04) != 0) { XaAudio.DecodeSector(sec, 8, sec[3]); _streamLba++; continue; }
-            if (Read16(sec, 8) != VideoMagic || Read16(sec, 12) != 0) { _streamLba++; continue; }
+            if ((sec[2] & 0x04) != 0) { XaAudio.DecodeSector(sec, 8, sec[3]); _streamLba++; _skip++; MaybeLoop(); continue; }
+            if (Read16(sec, 8) != VideoMagic || Read16(sec, 12) != 0) { _streamLba++; _skip++; MaybeLoop(); continue; }
 
             int n = Read16(sec, 14);
-            if (n <= 0 || n > _slots) { _streamLba++; continue; }
+            if (n <= 0 || n > _slots) { _streamLba++; _skip++; MaybeLoop(); continue; }
+            _skip = 0;
 
             double delivered = _clock.Elapsed.TotalSeconds * _sectorsPerSecond;
             if ((_streamLba - _streamStartLba) + n > delivered) { Thread.Sleep(1); continue; }
@@ -208,6 +232,10 @@ public static class LibCdStream
 
             if (!CollectFrame(cd, m, start, n)) continue;
 
+            int efno = m.ReadU16(_statusBase + (uint)(start * HeaderSize) + 8);
+            if (efno > EnqMaxFrame) EnqMaxFrame = efno;
+            if (FrameLog && (efno >= 1010 || efno <= 3))
+                Console.WriteLine($"[enq] fno={efno} lba={_streamLba} enqMax={EnqMaxFrame}");
             lock (_lock)
             {
                 for (int i = 0; i < n; i++) _busy[start + i] = true;

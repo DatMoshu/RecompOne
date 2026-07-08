@@ -1,3 +1,5 @@
+using System.IO;
+
 namespace RecompOne.Runtime.Context;
 
 public sealed class CpuContext
@@ -58,5 +60,20 @@ public sealed class CpuContext
         Array.Copy(s.gpr, _gpr, 32);
         HI = s.hi;
         LO = s.lo;
+    }
+
+    public void SaveState(BinaryWriter w)
+    {
+        for (int i = 0; i < 32; i++) w.Write(_gpr[i]);
+        w.Write(HI); w.Write(LO);
+        w.Write(SR); w.Write(Cause); w.Write(EPC); w.Write(BadVAddr); w.Write(PRId);
+    }
+
+    public void LoadState(BinaryReader r)
+    {
+        for (int i = 0; i < 32; i++) _gpr[i] = r.ReadUInt32();
+        HI = r.ReadUInt32(); LO = r.ReadUInt32();
+        SR = r.ReadUInt32(); Cause = r.ReadUInt32(); EPC = r.ReadUInt32();
+        BadVAddr = r.ReadUInt32(); PRId = r.ReadUInt32();
     }
 }

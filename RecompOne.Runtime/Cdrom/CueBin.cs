@@ -2,7 +2,7 @@ namespace RecompOne.Runtime.Cdrom;
 
 public sealed class CueBin : IDisposable
 {
-    private record Track(string BinPath, int Number, string Mode, int SectorSize, int DataOffset, long FileOffset);
+    private record Track(string BinPath, int Number, string Mode, int SectorSize, int DataOffset, long FileOffset, long StartSectors);
 
     private readonly List<Track> _tracks = [];
     private readonly Dictionary<string, FileStream> _files = [];
@@ -43,7 +43,7 @@ public sealed class CueBin : IDisposable
             {
                 long sectors = MsfToSectors(line[9..].Trim());
                 int ss = GetSectorSize(mode);
-                _tracks.Add(new Track(currentFile!, trackNum, mode, ss, GetDataOffset(mode), sectors * ss));
+                _tracks.Add(new Track(currentFile!, trackNum, mode, ss, GetDataOffset(mode), sectors * ss, sectors));
             }
         }
     }
@@ -69,6 +69,32 @@ public sealed class CueBin : IDisposable
             stream.ReadExactly(buf, 0, avail);
         }
         return buf;
+    }
+
+    // redbook TOC: track numbers are 1-based, MSF is the absolute start read from the cue
+    public int FirstTrack => _tracks.Count > 0 ? _tracks.Min(t => t.Number) : 1;
+    public int LastTrack => _tracks.Count > 0 ? _tracks.Max(t => t.Number) : 1;
+
+    // track 0 => lead-out (total disc length) so games can query the disc size
+    public (int mm, int ss, int ff) TrackStartMsf(int track)
+    {
+        if (track <= 0) return SectorsToMsf(LeadOutSectors());
+        var t = _tracks.Find(x => x.Number == track) ?? _tracks[^1];
+        return SectorsToMsf(t.StartSectors);
+    }
+
+    private long LeadOutSectors()
+    {
+        var last = _tracks[^1];
+        try { return new FileInfo(last.BinPath).Length / last.SectorSize; }
+        catch { return last.StartSectors; }
+    }
+
+    private static (int mm, int ss, int ff) SectorsToMsf(long sectors)
+    {
+        int m = (int)(sectors / (60 * 75));
+        int r = (int)(sectors % (60 * 75));
+        return (m, r / 75, r % 75);
     }
 
     private Track DataTrack() => _tracks.Find(t => !t.Mode.Equals("AUDIO", StringComparison.OrdinalIgnoreCase)) ?? throw new InvalidOperationException("no data track was found in cue sheet");

@@ -1,3 +1,4 @@
+using System.IO;
 using RecompOne.Runtime.Cdrom;
 using RecompOne.Runtime.Hardware;
 
@@ -119,6 +120,7 @@ public sealed class PSMemory : IMemory
     public void WriteU8(uint address, byte value)
     {
         uint phys = MemoryMap.ToPhysical(address);
+        Watch(phys, value, 1);
         TrackWrite(phys, 1);
         if (_cd != null && IsCd(phys)) { _cd.Write(phys, value); return; }
         Resolve(address, 1)[0] = value;
@@ -127,6 +129,7 @@ public sealed class PSMemory : IMemory
     public void WriteU16(uint address, ushort value)
     {
         uint phys = MemoryMap.ToPhysical(address);
+        Watch(phys, value, 2);
         TrackWrite(phys, 2);
         if (_cd != null && IsCd(phys)) { _cd.Write(phys, (byte)value); return; }
         if (IsSpu(phys)) { _spu.WriteReg16(phys, value); return; }
@@ -136,9 +139,28 @@ public sealed class PSMemory : IMemory
         s[1] = (byte)(value >> 8);
     }
 
+    public static bool WatchOn;
+    private void Watch(uint phys, uint value, int size)
+    {
+        if (WatchOn && (phys & 0x1FFFFFFFu) == 0x000B0CD8u && (value & 0x100u) != 0
+            && (_ram[0x000B0CD9] & 0x01) == 0) // bit 0x100 newly set
+            Console.WriteLine($"[watch] cd8 |= 0x100  val=0x{value:X8} scene=0x{(uint)(_ram[0x0009D280]|(_ram[0x0009D281]<<8)|(_ram[0x0009D282]<<16)|(_ram[0x0009D283]<<24)):X8}\n{new System.Diagnostics.StackTrace(2, false)}");
+    }
+
+    // PE1 Day-1 cinematic fix: the slot1 movie controller mis-fires at the seam
+    // between the two STR segments and stores 0 into the scene selector [0x8009D280],
+    // which collapses the scene and mass-tears-down the actor list (incl. the Day-1
+    // controller that would advance to the dressing room), freezing the game. While
+    // the movie phase [0x800B0DBA] is active, reject a 0-write to the scene selector
+    // so the scene stays on the map-431 controller until both segments truly finish.
+    public static bool SceneZeroGuard;
+
     public void WriteU32(uint address, uint value)
     {
         uint phys = MemoryMap.ToPhysical(address);
+        if (SceneZeroGuard && (phys & 0x1FFFFFFFu) == 0x0009D280u && value == 0 && _ram[0x000B0DBA] != 0)
+            return;
+        Watch(phys, value, 4);
         TrackWrite(phys, 4);
         if (phys == 0x1F801810u) { _gpu.WriteGp0(value); return; }
         if (phys == 0x1F801814u) { _gpu.WriteGp1(value); return; }
@@ -201,5 +223,29 @@ public sealed class PSMemory : IMemory
     {
         for (uint i = 0; i < length; i++)
             WriteU8(address + i, 0);
+    }
+
+    // Savestate: raw RAM windows only (_bios is static ROM, skipped).
+    public void SaveState(BinaryWriter w)
+    {
+        w.Write(_ram.Length); w.Write(_ram);
+        w.Write(_scratchpad.Length); w.Write(_scratchpad);
+        w.Write(_hwregs.Length); w.Write(_hwregs);
+    }
+
+    public void LoadState(BinaryReader r)
+    {
+        ReadInto(r, _ram);
+        ReadInto(r, _scratchpad);
+        ReadInto(r, _hwregs);
+    }
+
+    static void ReadInto(BinaryReader r, byte[] dst)
+    {
+        int len = r.ReadInt32();
+        int n = Math.Min(len, dst.Length);
+        int read = 0;
+        while (read < n) read += r.Read(dst, read, n - read);
+        if (len > n) r.BaseStream.Seek(len - n, SeekOrigin.Current);
     }
 }

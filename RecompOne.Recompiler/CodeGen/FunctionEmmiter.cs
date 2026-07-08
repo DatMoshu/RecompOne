@@ -50,7 +50,7 @@ public static class FunctionEmitter
         if (func.PreHookTarget.Length > 0)
             sb.AppendLine($"        {func.PreHookTarget}(c, m);");
         if (ctx.Debug)
-            sb.AppendLine($"        System.Console.WriteLine(\"{func.EmittedName} @ {func.OverlayName} @ 0x{func.Start:X8}\");");
+            sb.AppendLine($"        RecompOne.Runtime.Trace.Enter(0x{func.Start:X8}u);");
 
         for (int i = 0; i < instrs.Length; i++)
         {

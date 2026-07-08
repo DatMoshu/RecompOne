@@ -56,6 +56,9 @@ internal static unsafe class InputManager
     public static void Poll()
     {
         PollGamepadEvents();
+        // While a TAS is replaying, Tas.Tick drives Controller.State; don't let live
+        // keyboard/gamepad input clobber it (the replay hands control back when it ends).
+        if (Tas.Playing) return;
         PollKeyboard();
         PollGamepad();
         if (Runtime.FastStart) ApplyFastStart();
@@ -253,6 +256,12 @@ internal static unsafe class InputManager
     {
         if (key == Key.F1)  _topBarToggle = true;
         if (key == Key.F11) _fullscreenToggle = true;
+        // Savestates: F5 save / F7 load (applied at the next safe frame boundary by the
+        // host's scene-handler hook). F6/F8 switch to a second slot.
+        if (key == Key.F5) Savestate.SavePending = true;
+        if (key == Key.F7) Savestate.LoadPending = true;
+        if (key == Key.F6) Savestate.SlotPath = "state2.sav";
+        if (key == Key.F8) Savestate.SlotPath = "state1.sav";
     }
 
     static void TryOpenController()

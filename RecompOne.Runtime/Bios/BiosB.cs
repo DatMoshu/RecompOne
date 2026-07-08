@@ -1,3 +1,4 @@
+using System.IO;
 using RecompOne.Runtime.Context;
 using RecompOne.Runtime.Memory;
 
@@ -45,20 +46,62 @@ public static class BiosB
         }
     }
     
-    public static void CardComplete(CpuContext c, IMemory m, uint port)
+    // PE1's music/SE sequencer runs off Root Counter 2 (event class 0xF2000002),
+    // set up in FUN_80085644 as SetRCnt(0xF2000002, 0x44E8, 0x1000) — i.e. 17640
+    // ticks at sysclock/8 (4.2336 MHz) = 240 Hz. Nothing generates that timer IRQ
+    // under static recompilation, so the sequencer never advances and anything that
+    // waits for a song to finish (notably the post-battle victory jingle) spins
+    // forever. Pump the registered RCnt2 handler at its native rate each frame.
+    // No-op until the game opens+enables the event, so it is safe to always call.
+    static bool _rcnt2Logged;
+    public static void PumpRootCounter2(CpuContext c, IMemory m, int ticks)
     {
-        var card = (port & 0x10u) != 0 ? Runtime.CardB : Runtime.CardA;
-        uint spec = card.Enabled ? 0x0004u : 0x0100u;
-        
-        DeliverEventIntr(c, m, 0xF4000001u, spec);
-        DeliverEventIntr(c, m, 0xF0000011u, spec);
+        for (int t = 0; t < ticks; t++)
+            for (int i = 0; i < MaxEvents; i++)
+            {
+                if (_evCBs[i].Status != 2u || _evCBs[i].Class != 0xF2000002u) continue;
+                if ((_evCBs[i].Mode & 0x1000u) == 0 || _evCBs[i].Func == 0u) continue;
+                if (!_rcnt2Logged) { _rcnt2Logged = true; Console.WriteLine($"[rcnt2] sound sequencer tick firing (handler 0x{_evCBs[i].Func:X8})"); }
+                var snap = c.Snapshot();
+                RecompOne.Runtime.Dispatch.Dispatcher.Call(c, m, _evCBs[i].Func);
+                c.Restore(snap);
+            }
+    }
+
+    // On hardware a card BIOS call completes asynchronously via one of two event
+    // classes; under static recompilation no IRQ fires, so we deliver the matching
+    // event INLINE (via the mode-0x1000 handlers the game registered in
+    // FUN_800409b4) at the moment the op finishes. PE1's card task FUN_800405a4
+    // sequences on those handlers: _card_info/_card_load complete with the HwCARD
+    // class 0xF4000001, and _card_read/_card_write/_new_card complete with the
+    // SwCARD class 0xF0000011. Spec 0x0004 = success (present, readable card),
+    // 0x8000 = no-card/error. The handlers set DAT_800a1820/182c... which drive
+    // the state machine to set the card-present bit (FUN_80042770 & 1).
+    static uint CardSpec(uint port) => ((port & 0x10u) != 0 ? Runtime.CardB : Runtime.CardA).Enabled ? 0x0004u : 0x8000u;
+    static void CardHw(CpuContext c, IMemory m, uint port) => DeliverEventIntr(c, m, 0xF4000001u, CardSpec(port));
+    static void CardSw(CpuContext c, IMemory m, uint port) => DeliverEventIntr(c, m, 0xF0000011u, CardSpec(port));
+
+    // _card_info(port) / _card_load(port): A-calls that probe the card and load its
+    // directory; both complete with the HwCARD event.
+    static uint _cardInfoSig = 0xFFFFFFFF;
+    public static void CardInfo(CpuContext c, IMemory m)
+    {
+        var card = (c.A0 & 0x10u) != 0 ? Runtime.CardB : Runtime.CardA;
+        // The card task re-issues _card_info/_card_load every poll; log only on change.
+        uint sig = (c.A0 & 0x1Fu) | (card.Enabled ? 0x100u : 0u);
+        if (BiosA.CardLog && sig != _cardInfoSig)
+        {
+            _cardInfoSig = sig;
+            Console.WriteLine($"[card] _card_info/load port=0x{c.A0:X} enabled={card.Enabled}");
+        }
+        CardHw(c, m, c.A0); c.V0 = 1u;
     }
 
     static void NewCard(CpuContext c, IMemory m)
     {
         // _new_card re-initializes the card driver for a fresh access; the game
-        // calls it when creating a save. Report the card ready so New Game commits.
-        CardComplete(c, m, c.A0);
+        // calls it (via _card_clear) before a write. Complete with the SwCARD event.
+        CardSw(c, m, c.A0);
         c.V0 = 1u;
     }
 
@@ -68,10 +111,13 @@ public static class BiosB
         if (card.Enabled && c.A2 != 0u)
         {
             Span<byte> f = stackalloc byte[0x80];
-            card.FrameRead((int)(c.A1 & 0x3FFu), f);
+            int fr = (int)(c.A1 & 0x3FFu);
+            card.FrameRead(fr, f);
             for (uint i = 0; i < 0x80u; i++) m.WriteU8(c.A2 + i, f[(int)i]);
+            if (BiosA.CardLog) Console.WriteLine($"[card] _card_read port=0x{c.A0:X} frame={fr} status=0x{f[0]:X2} name={System.Text.Encoding.ASCII.GetString(f.Slice(0x0A, 12).ToArray()).TrimEnd('\0')}");
         }
-        CardComplete(c, m, c.A0);
+        else if (BiosA.CardLog) Console.WriteLine($"[card] _card_read port=0x{c.A0:X} frame={c.A1 & 0x3FFu} (skipped: enabled={card.Enabled} buf=0x{c.A2:X8})");
+        CardSw(c, m, c.A0);
         c.V0 = 1u;
     }
 
@@ -84,7 +130,7 @@ public static class BiosB
             for (uint i = 0; i < 0x80u; i++) f[(int)i] = m.ReadU8(c.A2 + i);
             card.FrameWrite((int)(c.A1 & 0x3FFu), f);
         }
-        CardComplete(c, m, c.A0);
+        CardSw(c, m, c.A0);
         c.V0 = 1u;
     }
 
@@ -307,5 +353,24 @@ public static class BiosB
             cur = next;
         }
         c.V0 = 0u;
+    }
+
+    public static void SaveState(BinaryWriter w)
+    {
+        foreach (var e in _evCBs) { w.Write(e.Status); w.Write(e.Class); w.Write(e.Spec); w.Write(e.Mode); w.Write(e.Func); }
+        foreach (var t in _tcbs) w.Write(t.Used);
+        foreach (var ic in _intChain) w.Write(ic);
+        w.Write(IntrEnvInInterruptAddr);
+        w.Write(_padBuf); w.Write(_padBufA); w.Write(_padBufB); w.Write(_padStarted);
+    }
+
+    public static void LoadState(BinaryReader r)
+    {
+        for (int i = 0; i < MaxEvents; i++)
+            _evCBs[i] = new EvCB { Status = r.ReadUInt32(), Class = r.ReadUInt32(), Spec = r.ReadUInt32(), Mode = r.ReadUInt32(), Func = r.ReadUInt32() };
+        for (int i = 0; i < MaxThreads; i++) _tcbs[i] = new TCB { Used = r.ReadBoolean() };
+        for (int i = 0; i < _intChain.Length; i++) _intChain[i] = r.ReadUInt32();
+        IntrEnvInInterruptAddr = r.ReadUInt32();
+        _padBuf = r.ReadUInt32(); _padBufA = r.ReadUInt32(); _padBufB = r.ReadUInt32(); _padStarted = r.ReadBoolean();
     }
 }

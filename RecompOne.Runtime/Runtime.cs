@@ -15,6 +15,8 @@ public static class Runtime
     public static Cdrom.CdController? Cd;
 
     public static bool FastStart; // debug: auto-drive the front-end into New Game
+    public static bool SoundTimerOn = true; // pump PE1's RCnt2 sound-sequencer IRQ each frame
+    public static Action<IMemory>? FrameHook; // invoked once per presented frame (host-registered)
 
     public static RunMode Mode { get; private set; } = RunMode.Retail;
     public static void SetMode(RunMode mode) => Mode = mode; //devkit vs retail, devkits reads from sim and has more ram
@@ -45,12 +47,18 @@ public static class Runtime
 
     public static void PresentFrame()
     {
-        HostWindow.Present(Gpu);
-        Audio.Attach(Spu);
+        bool turbo = Host.Tas.TurboActive; // read BEFORE Tas.Tick (which may end replay this frame)
+        if (turbo) HostWindow.PumpLight();  // keep the window alive; no render, no vsync wait
+        else HostWindow.Present(Gpu);
+        if (!turbo) Audio.Attach(Spu);      // don't drive audio at fast-forward speed
+        Host.Tas.Tick();          // apply replay input / capture record input for this frame
         Host.DriveRecorder.Tick();
-        FrameClock.Throttle();
+        if (!turbo) FrameClock.Throttle();  // run uncapped while fast-forwarding
         Sdk.LibCd.Tick();
         if (Mem != null) { Bios.BiosB.RefreshPad(Mem); Sdk.LibPad.Refresh(Mem); } //is this correct?
+        if (Mem != null) FrameHook?.Invoke(Mem); // per-frame game hook (registered by the host, e.g. PE1 patches)
+        if (SoundTimerOn && Cpu != null && Mem != null)
+            Bios.BiosB.PumpRootCounter2(Cpu, Mem, 4); // 240Hz sequencer tick (4 per 60fps frame)
         DispatchIrq(0); //using this to dispatch irqs too if necessary, probably not needed after the rest of stuff is reimplemented
     }
 

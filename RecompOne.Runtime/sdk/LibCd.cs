@@ -1,3 +1,4 @@
+using System.IO;
 using RecompOne.Runtime.Context;
 using RecompOne.Runtime.Dispatch;
 using RecompOne.Runtime.Memory;
@@ -380,5 +381,27 @@ public static class LibCd
         ff = ToBcd(i % 75);
         ss = ToBcd(i / 75 % 60);
         mm = ToBcd(i / 75 / 60);
+    }
+
+    // Savestate: resident register/callback state. The background XA decode thread and
+    // LibCdStream ring are transient audio and are not captured. // TODO savestate: XA/stream.
+    public static void SaveState(BinaryWriter w)
+    {
+        lock (_posGate) w.Write(_pos);
+        w.Write(_status); w.Write(_mode); w.Write(_com);
+        w.Write(_lastResult); w.Write(_lastIntr);
+        w.Write(_cbSync); w.Write(_cbReady); w.Write(_cbData);
+        w.Write(_readActive); w.Write(_xaActive); w.Write(_filterFile); w.Write(_filterChannel);
+    }
+
+    public static void LoadState(BinaryReader r)
+    {
+        lock (_posGate) for (int i = 0; i < _pos.Length; i++) _pos[i] = r.ReadByte();
+        _status = r.ReadByte(); _mode = r.ReadByte(); _com = r.ReadByte();
+        for (int i = 0; i < _lastResult.Length; i++) _lastResult[i] = r.ReadByte();
+        _lastIntr = r.ReadInt32();
+        _cbSync = r.ReadUInt32(); _cbReady = r.ReadUInt32(); _cbData = r.ReadUInt32();
+        _readActive = r.ReadBoolean(); _xaActive = r.ReadBoolean();
+        _filterFile = r.ReadByte(); _filterChannel = r.ReadByte();
     }
 }

@@ -81,6 +81,10 @@ public sealed class CueFs : IDisposable
         return null;
     }
 
+    public int FirstTrack => _bin.FirstTrack;
+    public int LastTrack => _bin.LastTrack;
+    public (int mm, int ss, int ff) TrackStartMsf(int track) => _bin.TrackStartMsf(track);
+
     public byte[] ReadSector(int lba) => _bin.ReadSector(lba);
 
     public byte[] ReadSectorData(int lba, int size) => _bin.ReadSectorData(lba, size);

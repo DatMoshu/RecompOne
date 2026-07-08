@@ -224,6 +224,51 @@ public static class FunctionDetector
         return result;
     }
     
+    // Seed a function at every prologue (addiu sp,sp,-N) not already claimed, bounding
+    // each at the next known start. Per-scene overlay code (chunk3) reaches many methods
+    // only through vtables / function pointers (no jal, no sequential fall-in), which
+    // linear sweep buries inside a neighbour — this makes each individually callable so
+    // they don't crash as "unmapped call".
+    public static List<MipsFunction> SeedPrologues(MipsInstruction[] all, List<MipsFunction> existing, string overlayName)
+    {
+        if (all.Length == 0) return [];
+        uint codeEnd = all[^1].Vram + 4;
+
+        var starts = new SortedSet<uint>(existing.Select(f => f.Start));
+        foreach (var ins in all) if (IsPrologue(ins)) starts.Add(ins.Vram);
+        var sorted = starts.ToList();
+
+        var existingStarts = new HashSet<uint>(existing.Select(f => f.Start));
+        var bodies = existing.Where(f => f.End > f.Start).ToList();
+
+        var result = new List<MipsFunction>();
+        for (int idx = 0; idx < sorted.Count; idx++)
+        {
+            uint addr = sorted[idx];
+            if (existingStarts.Contains(addr)) continue;
+            if (bodies.Any(f => addr > f.Start && addr < f.End)) continue; // already inside a claimed function
+
+            int si = InstrIndex(all, addr);
+            if (si < 0 || si >= all.Length || !IsPrologue(all[si])) continue;
+
+            uint maxEnd = idx + 1 < sorted.Count ? sorted[idx + 1] : codeEnd;
+            int ei = Math.Clamp(RefineEnd(all, si, InstrIndex(all, maxEnd)), si + 1, all.Length);
+            if (SliceHasUnknownInstruction(all, si, ei)) continue;
+
+            string name = $"func_{addr:X8}";
+            result.Add(new MipsFunction
+            {
+                Name = name,
+                OverlayName = overlayName,
+                EmittedName = name,
+                Start = addr,
+                End = all[ei - 1].Vram + 4,
+                Instructions = all[si..ei]
+            });
+        }
+        return result;
+    }
+
     static bool ValidatesAsFunction(MipsInstruction[] all, int startIdx, int boundIdx)
     {
         boundIdx = Math.Clamp(boundIdx, startIdx + 1, all.Length);
@@ -309,22 +354,40 @@ public static class FunctionDetector
     static int RefineEnd(MipsInstruction[] all, int startIdx, int maxEndIdx)
     {
         maxEndIdx = Math.Clamp(maxEndIdx, startIdx + 1, all.Length);
+        uint hiVram = all[^1].Vram;
+        // window we are allowed to decode. a pc-relative branch is always
+        // intra-procedural, so a branch reaching past the next detected start
+        // (shared epilogue / multiple-entry functions like a jal target that lands
+        // in the middle of a bigger routine) means the function really continues to
+        // its terminating jr ra — grow the window to follow it. absolute j targets
+        // stay bounded (they may be tail calls into a separate function).
+        int limit = maxEndIdx;
         uint reach = all[startIdx].Vram;
-        for (int i = startIdx; i < maxEndIdx; i++)
+        for (int i = startIdx; i < limit; i++)
         {
             var instr = all[i];
-            if (instr.IsJump || (instr.IsBranch && !instr.IsRegisterJump))
+            bool relBranch = instr.IsBranch && !instr.IsRegisterJump;
+            if (instr.IsJump || relBranch)
             {
                 uint tgt = instr.IsJump ? instr.JumpTarget : instr.BranchTarget;
-                if (tgt > reach && tgt > all[startIdx].Vram && tgt <= all[maxEndIdx - 1].Vram) reach = tgt;
+                if (tgt > reach && tgt > all[startIdx].Vram)
+                {
+                    bool beyondWindow = tgt > all[limit - 1].Vram;
+                    if (relBranch && beyondWindow && tgt <= hiVram)
+                    {
+                        reach = tgt;
+                        limit = all.Length; // termination is governed by the jr ra >= reach below
+                    }
+                    else if (!beyondWindow) reach = tgt;
+                }
             }
             if (IsFunctionEnd(all, startIdx, i) && instr.Vram >= reach)
             {
                 int end = i + 2; // include the delay slot
-                return Math.Clamp(end, startIdx + 1, maxEndIdx);
+                return Math.Clamp(end, startIdx + 1, all.Length);
             }
         }
-        return maxEndIdx;
+        return limit;
     }
     
     static bool IsFunctionEnd(MipsInstruction[] all, int startIdx, int i)

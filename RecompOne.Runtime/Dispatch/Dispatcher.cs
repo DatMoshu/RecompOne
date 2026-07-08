@@ -22,8 +22,11 @@ public static class Dispatcher
         if (_lbaToName.TryGetValue(lba, out var name)) Load(name);
     }
 
+    public static readonly HashSet<string> SkipOverlays = new(StringComparer.OrdinalIgnoreCase);
+
     public static void Load(string name)
     {
+        if (SkipOverlays.Contains(name)) return;
         if (!_registry.TryGetValue(name, out var overlay))
             throw new KeyNotFoundException($"overlay not registered: {name}");
 
@@ -66,13 +69,21 @@ public static class Dispatcher
         c.S6 = s6; c.S7 = s7; c.FP = fp; c.GP = gp; c.SP = sp;
     }
 
+    public static bool TraceGs1;
     public static void Call(CpuContext c, IMemory m, uint addr)
     {
+        if (TraceGs1 && (addr == 0x801216C4u || addr == 0x80121A00u || addr == 0x80121C04u ||
+                         addr == 0x801223A8u || addr == 0x80122040u || addr == 0x80014F60u))
+        {
+            uint ptr = m.ReadU32(0x801227E4u);
+            bool has = _funcMap.ContainsKey(addr);
+            Console.WriteLine($"[gs1trace] Call 0x{addr:X8} mapped={has} [0x801227E4]=0x{ptr:X8}");
+        }
         if (BiosKernel.TryDispatch(c, m, addr)) return;
         if (!_funcMap.TryGetValue(addr, out var fn))
         {
             if (LenientCalls) { c.V0 = 0; return; } // treat unmapped call as a no-op
-            throw new InvalidOperationException($"unmapped call: 0x{addr:X8}");
+            throw new InvalidOperationException($"unmapped call: 0x{addr:X8}  [{Sdk.LibDs.DescribeLoadFor(addr)}]");
         }
         fn(c, m);
     }
@@ -83,5 +94,16 @@ public static class Dispatcher
         foreach (var name in _active)
             foreach (var (addr, fn) in _registry[name].Functions)
                 _funcMap[addr] = fn;
+    }
+
+    // Savestate: capture the resident overlay set (in load order) and restore it by
+    // re-Load()ing each so _funcMap is rebuilt exactly as it was.
+    public static List<string> CaptureActive() => new(_active);
+
+    public static void RestoreActive(IEnumerable<string> names)
+    {
+        _active.Clear();
+        _funcMap.Clear();
+        foreach (var name in names) Load(name);
     }
 }

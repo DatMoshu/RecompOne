@@ -41,13 +41,16 @@ public static class BiosA
         m.WriteU32(ptr + 0x24u, 0u);
     }
 
+    public static bool CardLog = true; // temporary: log card dir scans to diagnose save-list display
     public static uint FirstFile(IMemory m, uint wildPtr, uint dirPtr)
     {
         string wild = Bios.ReadString(m, wildPtr);
         var card = CardFor(wild);
+        if (CardLog) Console.WriteLine($"[card] firstfile wild='{wild}' card={(card == null ? "null" : "ok")} pat='{(card == null ? "" : CardName(wild))}'");
         if (card == null) return 0u;
         _ff = card.Match(CardName(wild));
         _ffIdx = 0;
+        if (CardLog) Console.WriteLine($"[card] firstfile matches={_ff.Count}" + (_ff.Count > 0 ? $" first='{_ff[0].name}' size={_ff[0].size}" : ""));
         return NextFileEntry(m, dirPtr);
     }
 
@@ -346,8 +349,8 @@ public static class BiosA
             case 0x3F: Console.Write(Bios.FormatString(m, c, Bios.ReadString(m, c.A0))); c.V0 = 0u; break;
             case 0x40: throw new Exception("BIoS A(40h) SystemErrorUnresolvedException");
             case 0x41: c.V0 = 0u; break;
-            case 0x42: c.V0 = 0u; break;
-            case 0x43: c.V0 = 0u; break;
+            case 0x42: c.V0 = FirstFile(m, c.A0, c.A1); break; // firstfile2(wildcard, DIRENTRY*) — card dir scan (Continue/Load save list)
+            case 0x43: c.V0 = NextFile(m, c.A0); break;        // nextfile(DIRENTRY*)
             case 0x44: break;
             case 0x45: break;
             case 0x46: case 0x47: case 0x48: case 0x49:
@@ -415,8 +418,8 @@ public static class BiosA
                 break;
             }
             case 0xA6: c.V0 = _cd != null ? _cd.DriveStatusByte() : 0x02u; break;
-            case 0xAB: BiosB.CardComplete(c, m, c.A0); c.V0 = 1u; break;
-            case 0xAC: BiosB.CardComplete(c, m, c.A0); c.V0 = 1u; break;
+            case 0xAB: BiosB.CardInfo(c, m); break; // _card_info(port): HwCARD complete
+            case 0xAC: BiosB.CardInfo(c, m); break; // _card_load(port): HwCARD complete
             case 0xA7: case 0xA8: case 0xA9: case 0xAA:
             case 0xAD: case 0xAE: case 0xAF: break;
             case 0xB4:

@@ -132,6 +132,16 @@ public sealed class CdController
             case 0x0E: // set mode
                 QueueIrq(3, [DriveStatus()]);
                 break;
+            case 0x13: // GetTN
+                QueueIrq(3, [DriveStatus(), ToBcd(_fs.FirstTrack), ToBcd(_fs.LastTrack)]);
+                break;
+            case 0x14: // GetTD (track start MSF; track 0 = lead-out)
+            {
+                int track = prms.Count > 0 ? BcdToInt(prms[0]) : 0;
+                var (mm, ss, _) = _fs.TrackStartMsf(track);
+                QueueIrq(3, [DriveStatus(), ToBcd(mm), ToBcd(ss)]);
+                break;
+            }
             case 0x15: // seek L
             case 0x16: //seek P
                 QueueIrq(3, [DriveStatus()]);
@@ -313,6 +323,9 @@ public sealed class CdController
     }
 
     private byte DriveStatus() => (byte)(0x02 | ShellStatusBits());
+
+    private static byte ToBcd(int v) => (byte)(((v / 10) << 4) | (v % 10));
+    private static int BcdToInt(byte v) => (v >> 4) * 10 + (v & 0xF);
 
     private static int BcdToLba(byte mm, byte ss, byte ff)
     {

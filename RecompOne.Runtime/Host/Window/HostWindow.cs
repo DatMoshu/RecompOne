@@ -89,6 +89,18 @@ internal static class HostWindow
         _window.DoRender();
     }
 
+    // Turbo fast-forward pump: process OS events occasionally (so the window stays
+    // responsive and a close request is honored) but skip rendering entirely. Called
+    // in place of Present() while replay is fast-forwarding.
+    static int _pumpCounter;
+    public static void PumpLight()
+    {
+        if (_headless || _window == null) return;
+        if ((_pumpCounter++ & 63) != 0) return; // ~once per 64 fast-forwarded frames
+        try { _window.DoEvents(); } catch { }
+        if (_window.IsClosing) { Runtime.Shutdown(); Environment.Exit(0); }
+    }
+
     public static void Shutdown()
     {
         if (!_headless && _window != null && !_window.IsClosing)
