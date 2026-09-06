@@ -88,6 +88,12 @@ internal static class MainMenuBar
             Toggle<ControllerPanel>("Controller");
             ImGui.EndMenu();
         }
+        if (ImGui.BeginMenu("Info"))
+        {
+            Toggle<GameInfoPanel>("Game Info");
+            Toggle<SavestatePanel>("Savestates");
+            ImGui.EndMenu();
+        }
 
         ImGui.Separator();
 
@@ -96,7 +102,10 @@ internal static class MainMenuBar
             ConfigManager.ResetView(PanelManager.Panels);
             HostWindow.RequestLayoutReset(); // rebuild the docked default next frame
         }
-        
+
+        if (ImGui.MenuItem("Restart Game (relaunch process)"))
+            ProcessRestart.Request();
+
         ImGui.EndMenu();
     }
 

@@ -204,6 +204,8 @@ internal static class HostWindow
         PanelManager.Register(new DmaViewerPanel());
         PanelManager.Register(new OverlayEventsPanel());
         PanelManager.Register(new ControllerPanel());
+        PanelManager.Register(new GameInfoPanel());
+        PanelManager.Register(new SavestatePanel());
         PanelManager.Register(new SettingsPopup());
         PanelManager.Register(new AboutPopup());
 

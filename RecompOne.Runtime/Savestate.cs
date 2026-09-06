@@ -92,4 +92,30 @@ public static class Savestate
     public static void SaveToFile(string path, CpuContext c) => File.WriteAllBytes(path, Capture(c));
 
     public static void LoadFromFile(string path, CpuContext c) => Restore(File.ReadAllBytes(path), c);
+
+    // Header-only peek so a UI (Host/Window/Panels/Debug/SavestatePanel.cs) can label a
+    // state as stale and refuse to load it, instead of throwing mid-load. Deliberately
+    // does not touch CpuContext/PSMemory -- this must be safe to call every frame just
+    // to populate a list. IsSavestate is false for anything without our magic (e.g. a
+    // PS1 memory-card image such as carda.sav sitting in the same directory by
+    // convention) -- those aren't ours at all, distinct from a same-format-but-stale
+    // version mismatch.
+    public static bool TryReadHeader(string path, out bool isSavestate, out int version)
+    {
+        isSavestate = false;
+        version = 0;
+        try
+        {
+            using var fs = File.OpenRead(path);
+            using var r = new BinaryReader(fs);
+            if (r.ReadUInt32() != Magic) return true;
+            isSavestate = true;
+            version = r.ReadInt32();
+            return true;
+        }
+        catch { return false; }
+    }
+
+    public static bool IsCurrentVersion(string path) =>
+        TryReadHeader(path, out var isState, out var v) && isState && v == Version;
 }
