@@ -52,6 +52,19 @@ public sealed partial class Gpu
     public bool Display24Bit => _disp24;
     public bool Pal => _pal;
 
+    // Raw GP0(E3h)/GP0(E4h)/GP0(E5h) draw area + offset and GP1(06h)/GP1(07h) display
+    // range, exposed read-only for diagnostics (DumpAll / CaptureData).
+    public int DrawAreaLeft => _drawAreaLeft;
+    public int DrawAreaTop => _drawAreaTop;
+    public int DrawAreaRight => _drawAreaRight;
+    public int DrawAreaBottom => _drawAreaBottom;
+    public int DrawOffsetX => _drawOffsetX;
+    public int DrawOffsetY => _drawOffsetY;
+    public int HRange1 => _hRange1;
+    public int HRange2 => _hRange2;
+    public int VRange1 => _vRange1;
+    public int VRange2 => _vRange2;
+
     int CyclesPerPixel => _hres368 ? 7 : _hres switch { 0 => 10, 1 => 8, 2 => 5, _ => 4 };
 
     public int DisplayWidth

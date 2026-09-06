@@ -97,6 +97,11 @@ internal static class MainMenuBar
 
         ImGui.Separator();
 
+        if (ImGui.MenuItem("Dump All (VRAM + RAM + state)..."))
+            Host.DumpAll.Write(Path.Combine("dumps", $"dump_{Runtime.FrameCount:D6}"));
+
+        ImGui.Separator();
+
         if (ImGui.MenuItem("Reset Layout"))
         {
             ConfigManager.ResetView(PanelManager.Panels);

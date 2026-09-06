@@ -34,6 +34,24 @@ internal static class CaptureData
                 w.WriteNumber("displayY", gpu.DisplayY);
                 w.WriteNumber("displayWidth", gpu.DisplayWidth);
                 w.WriteNumber("displayHeight", gpu.DisplayHeight);
+                w.WriteStartObject("drawArea");
+                w.WriteNumber("left", gpu.DrawAreaLeft);
+                w.WriteNumber("top", gpu.DrawAreaTop);
+                w.WriteNumber("right", gpu.DrawAreaRight);
+                w.WriteNumber("bottom", gpu.DrawAreaBottom);
+                w.WriteEndObject();
+                w.WriteStartObject("drawOffset");
+                w.WriteNumber("x", gpu.DrawOffsetX);
+                w.WriteNumber("y", gpu.DrawOffsetY);
+                w.WriteEndObject();
+                w.WriteStartObject("hRange");
+                w.WriteNumber("1", gpu.HRange1);
+                w.WriteNumber("2", gpu.HRange2);
+                w.WriteEndObject();
+                w.WriteStartObject("vRange");
+                w.WriteNumber("1", gpu.VRange1);
+                w.WriteNumber("2", gpu.VRange2);
+                w.WriteEndObject();
                 w.WriteEndObject();
             }
 

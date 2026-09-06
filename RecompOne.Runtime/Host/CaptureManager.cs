@@ -15,8 +15,21 @@ public static class CaptureManager
     public static int DumpEvery;
     public static string OutDir = "snaps";
 
+    // --dump-all=<dir>[:N] : one-shot full-machine dump (DumpAll) for black-screen /
+    // hang triage. N is an optional frame to wait for; -1 (default) fires on the
+    // next Tick. Also reachable live via the Debug menu (calls DumpAll.Write directly,
+    // bypassing this queue entirely).
+    public static string? DumpAllDir;
+    public static long DumpAllAtFrame = -1;
+    static bool _dumpAllDone;
+
     public static void Tick(long frame)
     {
+        if (DumpAllDir != null && !_dumpAllDone && frame >= DumpAllAtFrame)
+        {
+            _dumpAllDone = true;
+            DumpAll.Write(DumpAllDir);
+        }
         // The window capture's own JSON sidecar (same base name) is written by
         // HostWindow at the moment the image is actually captured, so both
         // describe the identical rendered frame.

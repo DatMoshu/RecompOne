@@ -43,6 +43,11 @@ internal static unsafe class InputManager
         {
             _sdl = Sdl.GetApi();
             _sdl.SetHint("SDL_JOYSTICK_RAWINPUT", "0");
+            // SDL is initialised WITHOUT its video subsystem here (the window is GLFW), so it
+            // owns no windows and its focus-based event suppression should not apply. Set the
+            // hint anyway: it costs nothing, and it keeps the pad alive if this ever gains an
+            // SDL window, which is the shape of bug that is miserable to diagnose later.
+            _sdl.SetHint("SDL_JOYSTICK_ALLOW_BACKGROUND_EVENTS", "1");
             _sdl.InitSubSystem(Sdl.InitGamecontroller);
             TryOpenController();
         }
@@ -124,11 +129,18 @@ internal static unsafe class InputManager
 
     public static void Shutdown()
     {
-        if (_controller != null) { _sdl?.GameControllerClose(_controller); _controller = null; }
+        if (_controller != null) { _sdl?.GameControllerClose(_controller); _controller = null; _instanceId = -1; }
         _sdl?.QuitSubSystem(Sdl.InitGamecontroller);
         _sdl?.Dispose();
         _sdl = null;
     }
+
+    // Instance id of the pad we currently hold open (-1 = none). SDL reuses device INDEXES
+    // as devices come and go, but an instance id is unique for the lifetime of a connection,
+    // so it is the only safe way to tell "our pad was unplugged" from "some other device was".
+    static int _instanceId = -1;
+    static int _rescanCountdown;
+    const int RescanFrames = 120; // ~2 s at 60 fps
 
     static void PollGamepadEvents()
     {
@@ -138,14 +150,45 @@ internal static unsafe class InputManager
         {
             if (ev.Type == (uint)EventType.Controllerdeviceadded)
             {
+                // CONTROLLERDEVICEADDED carries a device INDEX, not an instance id.
                 LastPadEvent = $"device added (index {ev.Cdevice.Which})";
+                // Pick it up immediately, so unplugging and replugging a pad just works
+                // instead of needing the Rescan button.
                 if (_controller == null) TryOpenController();
             }
             if (ev.Type == (uint)EventType.Controllerdeviceremoved)
             {
-                LastPadEvent = $"device removed (id {ev.Cdevice.Which})";
-                if (_controller != null) { _sdl.GameControllerClose(_controller); _controller = null; }
+                // CONTROLLERDEVICEREMOVED carries the INSTANCE id of the device that left.
+                //
+                // This used to close _controller unconditionally, without ever comparing that
+                // id against the pad actually open -- so ANY other device disappearing (a
+                // second pad, a wireless dongle re-enumerating, an XInput slot flapping, which
+                // the SDL_JOYSTICK_RAWINPUT=0 hint below makes more likely) closed the working
+                // controller. Nothing then reopened it unless some device happened to be added
+                // later, leaving the pad dead for the rest of the session while the keyboard
+                // kept working -- an intermittent "the gamepad just stops" that looked like a
+                // focus bug because it depended on unrelated devices coming and going.
+                bool ours = _controller != null && ev.Cdevice.Which == _instanceId;
+                LastPadEvent = $"device removed (instance {ev.Cdevice.Which}){(ours ? " - was ours" : " - not ours, ignored")}";
+                if (ours)
+                {
+                    _sdl.GameControllerClose(_controller);
+                    _controller = null;
+                    _instanceId = -1;
+                    TryOpenController(); // another pad may still be attached
+                }
             }
+        }
+
+        // Self-healing rescan. Whatever the cause of a dropout -- a removal we never saw an
+        // add for, a pad claimed by another process at start-up, a device that came back
+        // without an event -- retry periodically rather than staying dead until someone
+        // opens the debug panel and presses Rescan.
+        if (_controller == null && --_rescanCountdown <= 0)
+        {
+            _rescanCountdown = RescanFrames;
+            _sdl.JoystickUpdate();
+            TryOpenController();
         }
     }
 
@@ -313,7 +356,7 @@ internal static unsafe class InputManager
     public static void Rescan()
     {
         if (_sdl == null) { OpenResult = "SDL not initialised"; return; }
-        if (_controller != null) { _sdl.GameControllerClose(_controller); _controller = null; }
+        if (_controller != null) { _sdl.GameControllerClose(_controller); _controller = null; _instanceId = -1; }
         _sdl.JoystickUpdate();
         TryOpenController();
     }
@@ -329,7 +372,15 @@ internal static unsafe class InputManager
             if (_sdl.IsGameController(i) != SdlBool.True) continue;
             mapped++;
             _controller = _sdl.GameControllerOpen(i);
-            if (_controller != null) { OpenResult = $"opened device {i}"; return; }
+            if (_controller != null)
+            {
+                // Record the instance id so a later CONTROLLERDEVICEREMOVED can be matched
+                // against THIS pad instead of closing it on any device's removal.
+                var joy = _sdl.GameControllerGetJoystick(_controller);
+                _instanceId = joy != null ? _sdl.JoystickInstanceID(joy) : -1;
+                OpenResult = $"opened device {i} (instance {_instanceId})";
+                return;
+            }
         }
         OpenResult = mapped == 0
             ? $"{n} joystick(s) present but none has a gamecontroller mapping"

@@ -36,6 +36,57 @@ public static class Tas
     static long _lastHeartbeatFrame;
     const long HeartbeatFrames = 300; // ~5s at 60fps
 
+    // ---- Periodic savestates while recording ----------------------------------------
+    // A long playtest that ends in a crash gives us the crash but no cheap way back to
+    // just before it: reproducing the last 30 seconds means replaying the whole run.
+    // Capturing a state every minute while recording turns "replay 55 minutes" into
+    // "load the state from a minute ago and replay the tail".
+    //
+    // This ONLY arms while Recording (the request is raised inside the `if (Recording)`
+    // block below), so a normal play session never writes one. Tas raises a request and
+    // nothing more -- it never touches CpuContext and never blocks. The game host applies
+    // it at whatever point IT considers safe (see the port's per-frame hook), because only
+    // the game knows what a consistent call depth looks like; a state captured at the
+    // wrong depth is worse than no state at all.
+    public static long AutoStateFrames = 3600;   // ~60 s at 60 fps; 0 disables
+    public static int AutoStateKeep = 8;         // retention: how many of the newest to keep
+    static long _nextAutoStateFrame;
+    static readonly List<string> _autoStates = new();
+
+    /// <summary>Frame-stamped sibling of the recording: `run.rec` -> `run.f003600.sav`, so a
+    /// state's filename says which recorded frame it belongs to.</summary>
+    static string AutoStatePath(long frame)
+    {
+        string dir = System.IO.Path.GetDirectoryName(_recPath) ?? "";
+        string stem = System.IO.Path.GetFileNameWithoutExtension(_recPath);
+        return System.IO.Path.Combine(dir, $"{stem}.f{frame:D6}.sav");
+    }
+
+    // Retention. A state is ~3.7 MB; one a minute across an hour is 60 files and 200+ MB,
+    // which would quietly fill a disk during exactly the long unattended sessions this
+    // feature exists to serve. Keep the newest AutoStateKeep and delete the rest. The list
+    // is in creation order and only entries BEFORE the tail are ever removed, so the newest
+    // state can never be the one deleted.
+    static void PruneAutoStates()
+    {
+        while (_autoStates.Count > Math.Max(1, AutoStateKeep))
+        {
+            string old = _autoStates[0];
+            _autoStates.RemoveAt(0);
+            try { if (System.IO.File.Exists(old)) System.IO.File.Delete(old); } catch { }
+        }
+    }
+
+    /// <summary>Called by the game host once it has actually written the file, so retention
+    /// tracks states that exist rather than ones that were merely requested (a request the
+    /// safety gate declines is retried, not written).</summary>
+    public static void NoteAutoStateWritten(string path)
+    {
+        _autoStates.Remove(path);
+        _autoStates.Add(path);
+        PruneAutoStates();
+    }
+
     // replay keyframes (frame, state, leftX, leftY), sorted by frame
     static readonly List<(long f, ushort st, byte lx, byte ly)> _play = new();
     static int _playIdx;
@@ -47,6 +98,7 @@ public static class Tas
         _rec.AppendLine("# PE1 TAS input record: <frame> <state hex, active-low> <leftX> <leftY>");
         Recording = true;
         _lastHeartbeatFrame = Frame;
+        _nextAutoStateFrame = AutoStateFrames > 0 ? Frame + AutoStateFrames : long.MaxValue;
     }
 
     public static void StartReplay(string path)
@@ -102,6 +154,15 @@ public static class Tas
                 _lastRecState = st; _lastLx = Controller.LeftX; _lastLy = Controller.LeftY;
                 _lastHeartbeatFrame = Frame;
                 try { System.IO.File.WriteAllText(_recPath, _rec.ToString()); } catch { }
+            }
+            // Periodic savestate request. Raised here and only here, so it cannot arm on a
+            // run that is not recording. Newest-wins: if a previous request is still parked
+            // waiting for a safe frame, overwrite it rather than queueing -- the freshest
+            // recoverable point is the useful one.
+            if (AutoStateFrames > 0 && Frame >= _nextAutoStateFrame)
+            {
+                _nextAutoStateFrame = Frame + AutoStateFrames;
+                Savestate.AutoSavePath = AutoStatePath(Frame);
             }
         }
         Frame++;

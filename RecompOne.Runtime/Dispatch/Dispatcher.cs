@@ -128,6 +128,18 @@ public static class Dispatcher
     // re-Load()ing each so _funcMap is rebuilt exactly as it was.
     public static List<string> CaptureActive() => new(_active);
 
+    public readonly record struct OverlayInfo(string Name, int Lba, int FunctionCount, uint MinAddr, uint MaxAddr);
+
+    // Diagnostic snapshot for DumpAll: which overlays are resident and where, without
+    // exposing the registry itself.
+    public static List<OverlayInfo> DescribeActive() => _active.Select(n =>
+    {
+        var f = _registry[n].Functions;
+        return f.Count == 0
+            ? new OverlayInfo(n, _registry[n].LbaStart, 0, 0, 0)
+            : new OverlayInfo(n, _registry[n].LbaStart, f.Count, f.Keys.Min(), f.Keys.Max());
+    }).ToList();
+
     public static void RestoreActive(IEnumerable<string> names)
     {
         _active.Clear();
