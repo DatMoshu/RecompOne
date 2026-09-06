@@ -22,6 +22,16 @@ public static class Savestate
     public static bool SavePending, LoadPending;
     public static string SlotPath = "state1.sav";
 
+    // Debug escape hatch, added at the user's explicit request (Savestates panel "Force
+    // Load"): apply a load on the very next frame regardless of the safety gate a game
+    // host enforces around LoadPending (see PE1's Patches.PerFrame `gateOk`). This is
+    // how the "load during New Game went black" bug was originally found, and the user
+    // wants to keep poking at load-at-arbitrary-points deliberately. PROVISIONAL: remove
+    // this once save/load-at-arbitrary-points is properly supported (or decide it never
+    // will be and delete the affordance). A game host that never sets this behaves
+    // exactly as before.
+    public static bool ForceLoadPending;
+
     public static byte[] Capture(CpuContext c)
     {
         using var ms = new MemoryStream();
