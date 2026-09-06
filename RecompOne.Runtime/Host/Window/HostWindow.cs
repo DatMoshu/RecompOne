@@ -32,9 +32,12 @@ internal static class HostWindow
     static volatile bool _ramReady;
     static int _ramFrame;
 
-    static bool _layoutPending = true;
     static bool _closed;
     static DiscPickerPopup? _discPicker;
+
+    // Only true when there is no saved layout to restore (first run, or "Reset Layout").
+    // Never set when a user's interface.ini already has dock data -- see ConfigureImGui.
+    static bool _layoutPending;
 
     public static void Initialize(string title)
     {
@@ -42,9 +45,11 @@ internal static class HostWindow
 
         try
         {
+            var (defW, defH) = DefaultWindowSize();
             var options = WindowOptions.Default with
             {
-                Size = Runtime.WindowSize is { } ws ? new Vector2D<int>(ws.W, ws.H) : new Vector2D<int>(ConfigManager.View.WindowWidth, ConfigManager.View.WindowHeight),
+                Size = Runtime.WindowSize is { } ws ? new Vector2D<int>(ws.W, ws.H)
+                    : new Vector2D<int>(ConfigManager.View.GetInt("WindowWidth", defW), ConfigManager.View.GetInt("WindowHeight", defH)),
                 Title = title,
                 VSync = false,
                 UpdatesPerSecond = 0,
@@ -63,6 +68,27 @@ internal static class HostWindow
             Console.Error.WriteLine($"[Host] window unavailable {e.Message}");
             _headless = true;
         }
+    }
+
+    // Target a window wide enough to comfortably fit the shipped default layout
+    // (left column + centered game view + right column of debug panels), but never
+    // wider/taller than the primary monitor's work area (90%, floored) so it doesn't
+    // overflow a laptop screen. Overridable by --window and by whatever size the
+    // user last resized to (persisted via ViewConfig).
+    const int PreferredWindowW = 1730, PreferredWindowH = 1015;
+    static (int W, int H) DefaultWindowSize()
+    {
+        int mw = 1920, mh = 1080;
+        try
+        {
+            var res = Silk.NET.Windowing.Monitor.GetMainMonitor(null)?.VideoMode.Resolution;
+            if (res is { } r) (mw, mh) = (r.X, r.Y);
+        }
+        catch { }
+        int maxW = (int)(mw * 0.9f), maxH = (int)(mh * 0.9f);
+        int w = Math.Max(Math.Min(PreferredWindowW, maxW), 1024);
+        int h = Math.Max(Math.Min(PreferredWindowH, maxH), 600);
+        return (w, h);
     }
 
     public static void Present(Gpu? gpu)
@@ -202,8 +228,11 @@ internal static class HostWindow
         io.ConfigWindowsMoveFromTitleBarOnly = true;
         unsafe { io.NativePtr->IniFilename = null; }
 
-        if (Config.ConfigManager.ApplyImGuiLayout())
-            _layoutPending = false;
+        // No saved layout to restore (first run) -> build the shipped default next
+        // frame (see DrawDockspace / DockBuilder.SetupColumnsLayout). A saved layout
+        // is never touched.
+        if (!Config.ConfigManager.ApplyImGuiLayout())
+            _layoutPending = true;
     }
 
     static void OnRender(double dt)
@@ -258,7 +287,28 @@ internal static class HostWindow
         gl.BindFramebuffer(FramebufferTarget.Framebuffer, 0);
         gl.Viewport(0, 0, (uint)fbDef.X, (uint)fbDef.Y);
         _imgui.Render();
+
+        if (_pendingWindowCapture != null)
+        {
+            var path = _pendingWindowCapture;
+            _pendingWindowCapture = null;
+            try
+            {
+                WindowCapture.Save(gl, fbDef.X, fbDef.Y, path);
+                // Data sidecar written at the exact same instant as the image, so the
+                // two always describe the identical rendered frame.
+                CaptureData.Write(Path.ChangeExtension(path, ".json"));
+            }
+            catch (Exception e) { Console.Error.WriteLine($"[Host] window capture failed: {e.Message}"); }
+        }
     }
+
+    // Full-window capture (game view + docked debug panels) plus its JSON sidecar,
+    // queued here and taken at the tail of this frame's render — after ImGui draws,
+    // before the backbuffer swaps. One frame of latency vs. the request, same as
+    // any other deferred GL readback; irrelevant for periodic diagnostic snaps.
+    static string? _pendingWindowCapture;
+    public static void RequestWindowCapture(string pngPath) => _pendingWindowCapture = pngPath;
 
     static void DrawDockspace()
     {
@@ -288,16 +338,34 @@ internal static class HostWindow
         if (_layoutPending)
         {
             _layoutPending = false;
-            DockBuilder.SetupCenterLayout(dockId, viewport.WorkSize, "Output");
+            ApplyDefaultLayout(dockId, viewport.WorkSize);
         }
 
         ImGui.End();
     }
 
+    // The shipped default: CPU State + Controller stacked in a left column, the
+    // game viewport centered (largest area, letterboxed by OutputPanel itself), and
+    // RAM Map / VRAM Viewer / Overlay Events / DMA Viewer stacked in a right column
+    // -- each its own row so all four are visible at once, not tabbed together.
+    static void ApplyDefaultLayout(uint dockId, Vector2 size) =>
+        DockBuilder.SetupColumnsLayout(dockId, size, "Output",
+            ("CPU State", "Controller"),
+            ["RAM Map", "VRAM Viewer", "Overlay Events", "DMA Viewer"]);
+
+    // Rebuilds the shipped default layout next frame. Only invoked explicitly (menu
+    // bar "Reset Layout"), never on a normal boot with a saved interface.ini.
+    public static void RequestLayoutReset() => _layoutPending = true;
+
     static void OnClosing()
     {
         if (_closed) return;
         _closed = true;
+        if (_window != null && _window.WindowState == WindowState.Normal)
+        {
+            ConfigManager.View.WindowWidth = _window.Size.X;
+            ConfigManager.View.WindowHeight = _window.Size.Y;
+        }
         ConfigManager.SaveView(PanelManager.Panels);
         ConfigManager.SaveGame();
         PanelManager.Shutdown();

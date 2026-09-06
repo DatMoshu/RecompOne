@@ -1,6 +1,3 @@
-using System.IO.Compression;
-using System.Text;
-
 namespace RecompOne.Runtime.Host;
 
 /// <summary>Dump the GPU display area as an RGB PNG — headless-safe, works with the
@@ -48,29 +45,7 @@ public static class Screenshot
                 raw[o++] = (byte)((p & 0x1F) << 3); raw[o++] = (byte)(((p >> 5) & 0x1F) << 3); raw[o++] = (byte)(((p >> 10) & 0x1F) << 3);
             }
         }
-        using var ms = new MemoryStream();
-        ms.Write(new byte[] { 0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A });
-        void Chunk(string type, byte[] data)
-        {
-            var t = Encoding.ASCII.GetBytes(type);
-            var len = BitConverter.GetBytes(data.Length); Array.Reverse(len); ms.Write(len);
-            ms.Write(t); ms.Write(data);
-            var crc = BitConverter.GetBytes(Crc32(t, data)); Array.Reverse(crc); ms.Write(crc);
-        }
-        var ihdr = new byte[13];
-        BitConverter.GetBytes(w).Reverse().ToArray().CopyTo(ihdr, 0);
-        BitConverter.GetBytes(h).Reverse().ToArray().CopyTo(ihdr, 4);
-        ihdr[8] = 8; ihdr[9] = 2; // 8-bit RGB
-        Chunk("IHDR", ihdr);
-        using (var z = new MemoryStream())
-        {
-            using (var zs = new ZLibStream(z, CompressionLevel.Fastest, true)) zs.Write(raw);
-            Chunk("IDAT", z.ToArray());
-        }
-        Chunk("IEND", Array.Empty<byte>());
-        var dir = Path.GetDirectoryName(Path.GetFullPath(path));
-        if (dir != null) Directory.CreateDirectory(dir);
-        File.WriteAllBytes(path, ms.ToArray());
+        PngWriter.WriteRgb(path, w, h, raw);
         return true;
     }
 
@@ -79,17 +54,5 @@ public static class Screenshot
         int hw = (byteOffset >> 1) & (Gpu.VramWidth * Gpu.VramHeight - 1);
         ushort v = vram[hw];
         return (byte)((byteOffset & 1) == 0 ? v & 0xFF : v >> 8);
-    }
-
-    static uint Crc32(byte[] a, byte[] b)
-    {
-        uint c = 0xFFFFFFFFu;
-        foreach (var arr in new[] { a, b })
-            foreach (var by in arr)
-            {
-                c ^= by;
-                for (int k = 0; k < 8; k++) c = (c & 1) != 0 ? 0xEDB88320u ^ (c >> 1) : c >> 1;
-            }
-        return ~c;
     }
 }

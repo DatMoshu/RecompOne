@@ -8,7 +8,14 @@ namespace RecompOne.Runtime.Config;
 
 static file class PanelDefaults
 {
-    public static bool IsOpenByDefault(IPanel p) => p.Name == "Output";
+    // Debug panels default to open (and docked, see DockBuilder.SetupDefaultLayout)
+    // so a screenshot of a freshly-launched window shows live diagnostic data.
+    static readonly HashSet<string> _openByDefault =
+    [
+        "Output", "CPU State", "Controller", "VRAM Viewer", "RAM Map", "DMA Viewer", "Overlay Events",
+    ];
+
+    public static bool IsOpenByDefault(IPanel p) => _openByDefault.Contains(p.Name);
 }
 
 internal static class ConfigManager
@@ -60,8 +67,9 @@ internal static class ConfigManager
     {
         foreach (var p in panels)
         {
-            if (View.Panels.TryGetValue(p.Name, out var state))
-                p.IsOpen = state.Open;
+            p.IsOpen = View.Panels.TryGetValue(p.Name, out var state)
+                ? state.Open
+                : PanelDefaults.IsOpenByDefault(p);
         }
     }
 

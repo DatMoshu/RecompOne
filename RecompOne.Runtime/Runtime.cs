@@ -71,6 +71,7 @@ public static class Runtime
         bool turbo = Host.Tas.TurboActive; // read BEFORE Tas.Tick (which may end replay this frame)
         if (turbo) HostWindow.PumpLight();  // keep the window alive; no render, no vsync wait
         else HostWindow.Present(Gpu);
+        if (!turbo) Host.CaptureManager.Tick(FrameCount); // --snap-window / --dump (engine-level, off by default)
         if (!turbo) Audio.Attach(Spu);      // don't drive audio at fast-forward speed
         Host.Tas.Tick();          // apply replay input / capture record input for this frame
         Host.DriveRecorder.Tick();
@@ -78,6 +79,15 @@ public static class Runtime
         Sdk.LibCd.Tick();
         if (Mem != null) { Bios.BiosB.RefreshPad(Mem); Sdk.LibPad.Refresh(Mem); } //is this correct?
         Hle.GlBackend.ColorHistFrame();
+        // Play.Tick (RecompOne.Runtime.Play) MUST run before FrameHook, and both MUST run
+        // before this function returns: Controller.State written here is what the
+        // recompiled game reads back the next time it samples the pad, which can happen
+        // any time between now and the next PresentFrame call. FrameHook (e.g. PE1's
+        // Patches.PerFrame) may also want to see/override Controller.State for its own
+        // debug drivers (AutoMap/Gizmo), so Play goes first — do not reorder this pump
+        // without re-checking that guarantee; a scripted run's WaitForChange movement
+        // detection silently returns wrong answers if input lags a frame.
+        if (Mem != null) Play.Play.Tick(Mem);
         if (Mem != null) FrameHook?.Invoke(Mem); // per-frame game hook (registered by the host, e.g. PE1 patches)
         if (SoundTimerOn && Cpu != null && Mem != null)
             Bios.BiosB.PumpRootCounter2(Cpu, Mem, 4); // 240Hz sequencer tick (4 per 60fps frame)

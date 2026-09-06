@@ -91,7 +91,11 @@ internal static class MainMenuBar
 
         ImGui.Separator();
 
-        if (ImGui.MenuItem("Reset View")) ConfigManager.ResetView(PanelManager.Panels);
+        if (ImGui.MenuItem("Reset Layout"))
+        {
+            ConfigManager.ResetView(PanelManager.Panels);
+            HostWindow.RequestLayoutReset(); // rebuild the docked default next frame
+        }
         
         ImGui.EndMenu();
     }
