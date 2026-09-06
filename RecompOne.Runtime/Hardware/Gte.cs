@@ -238,10 +238,15 @@ public static class Gte
                 SetMac(2, (long)IR2 * IR2, sf, lm);
                 SetMac(3, (long)IR3 * IR3, sf, lm);
                 break;
+            // OP (cross product). The three rows are cross-dependent -- row 2 needs the
+            // original IR1/IR3, row 3 the original IR1/IR2 -- but SetMac writes IRn as well
+            // as MACn, so computing them in place let row 1's result poison row 3's IR1.
+            // Hardware latches the operands first, so snapshot IR before writing anything.
             case 0x0C:
-                SetMac(1, (long)RT[4] * IR3 - (long)RT[8] * IR2, sf, lm);
-                SetMac(2, (long)RT[8] * IR1 - (long)RT[0] * IR3, sf, lm);
-                SetMac(3, (long)RT[0] * IR2 - (long)RT[4] * IR1, sf, lm);
+                int op1 = IR1, op2 = IR2, op3 = IR3;
+                SetMac(1, (long)RT[4] * op3 - (long)RT[8] * op2, sf, lm);
+                SetMac(2, (long)RT[8] * op1 - (long)RT[0] * op3, sf, lm);
+                SetMac(3, (long)RT[0] * op2 - (long)RT[4] * op1, sf, lm);
                 break;
             case 0x3D:
                 SetMac(1, (long)IR0 * IR1, sf, lm);
