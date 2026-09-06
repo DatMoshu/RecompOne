@@ -34,7 +34,12 @@ public sealed partial class Gpu
 
         var be = GpuHle.Backend!;
         be.SetDrawEnv(CurEnv());
-        be.DrawTri(HV(a), HV(b), HV(c), PrimOf(tex, semi, raw, clut));
+        var ha = HV(a); var hb = HV(b); var hc = HV(c);
+        // Room/model exporter hook (--export-room): off by default, zero cost. This is the single
+        // funnel every triangle passes through regardless of backend, so it's where the GTE's 3D
+        // capture (GteCapture.OnRtp) gets correlated with the material/UV data assembled here.
+        if (GteCapture.Enabled) GteCapture.OnTriangle(ha, hb, hc, tex, (ushort)CurTPage(), (ushort)clut);
+        be.DrawTri(ha, hb, hc, PrimOf(tex, semi, raw, clut));
     }
 
     void HleRect(int x, int y, int w, int h, int u, int v, int clut, int r, int g, int b, bool tex, bool semi, bool raw)

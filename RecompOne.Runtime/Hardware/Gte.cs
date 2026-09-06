@@ -190,6 +190,12 @@ public static class Gte
         SX[0] = SX[1]; SX[1] = SX[2]; SX[2] = (short)nx;
         SY[0] = SY[1]; SY[1] = SY[2]; SY[2] = (short)ny;
 
+        // Room/model exporter hook (--export-room, PE1-only for now): off by default, zero cost.
+        // MAC1..3 here is the pre-perspective-divide position (RT*vertex + TR) — real 3D, unlike
+        // anything the GPU itself ever sees. See RecompOne.Runtime/Hardware/GteCapture.cs.
+        if (GteCapture.Enabled)
+            GteCapture.OnRtp(nx, ny, MAC1, MAC2, MAC3, (short)vx, (short)vy, (short)vz, (short[])RT.Clone(), (int[])TR.Clone());
+
         if (last)
         {
             long dp = CheckMac0((long)div * DQA + DQB);
