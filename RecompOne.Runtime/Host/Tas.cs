@@ -19,8 +19,15 @@ public static class Tas
     // fast-forward early (at a chosen frame) so the tail plays at real speed.
     public static bool Turbo;
     public static long TurboUntil = long.MaxValue;
-    public static bool ForceTurbo;   // fast-forward regardless of replay state (auto-mapper)
-    public static bool TurboActive => ForceTurbo || (Turbo && Playing && Frame < TurboUntil);
+    public static bool ForceTurbo;   // fast-forward regardless of replay state (PE1's AutoMap room-mapper)
+    // Separate flag for RecompOne.Runtime.Play's FastForward primitive. AutoMap.Tick
+    // unconditionally OVERWRITES ForceTurbo every frame (`Tas.ForceTurbo = <expr>`), so
+    // sharing one boolean would mean whichever of AutoMap/Play last wrote it that frame
+    // wins and the other's turbo request silently drops. AutoMap and Play are not meant
+    // to run at once, but ORing two independent flags instead of sharing one costs
+    // nothing and removes the failure mode entirely if that assumption is ever wrong.
+    public static bool PlayForceTurbo;
+    public static bool TurboActive => ForceTurbo || PlayForceTurbo || (Turbo && Playing && Frame < TurboUntil);
 
     static string _recPath = "tas.rec";
     static readonly System.Text.StringBuilder _rec = new();

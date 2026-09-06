@@ -217,8 +217,18 @@ public static class LibCdStream
             if (n <= 0 || n > _slots) { _streamLba++; _skip++; MaybeLoop(); continue; }
             _skip = 0;
 
-            double delivered = _clock.Elapsed.TotalSeconds * _sectorsPerSecond;
-            if ((_streamLba - _streamStartLba) + n > delivered) { Thread.Sleep(1); continue; }
+            // Real-CD-speed pacing, so normal playback looks/sounds right. Under turbo
+            // (Host.Tas.TurboActive), drop ONLY this wall-clock gate, not the ring-full
+            // backpressure check below — the earlier turbo/FMV stall was this clock
+            // capping delivery to real time regardless of how fast the consumer could
+            // drain the ring, not a ring-capacity problem. Removing backpressure too
+            // would let delivery outrun the consumer and corrupt the stream (the exact
+            // failure BFM hit with XA Form2 sectors resetting the ring every 8th sector).
+            if (!Host.Tas.TurboActive)
+            {
+                double delivered = _clock.Elapsed.TotalSeconds * _sectorsPerSecond;
+                if ((_streamLba - _streamStartLba) + n > delivered) { Thread.Sleep(1); continue; }
+            }
 
             int start;
             lock (_lock)
