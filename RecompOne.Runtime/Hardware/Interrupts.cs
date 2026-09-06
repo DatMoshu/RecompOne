@@ -118,6 +118,13 @@ public static class Interrupts
         Invoke(irq, cpu, mem);
     }
 
+    // Savestate: only the deferred-bit set is real state. _inDeliver is false at any point
+    // safe enough to take a state at (a handler is by definition not running there), and
+    // _inChain likewise; persisting either would let a stale "handler running" flag survive
+    // a load and suppress every subsequent interrupt.
+    public static void SaveState(BinaryWriter w) => w.Write(_deferred);
+    public static void LoadState(BinaryReader r) { _deferred = r.ReadUInt32(); _inDeliver = false; _inChain = false; }
+
     static void Invoke(int irq, CpuContext cpu, IMemory mem)
     {
         uint intrEnv = BiosB.IntrEnvInInterruptAddr;

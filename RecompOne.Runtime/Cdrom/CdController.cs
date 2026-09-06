@@ -422,4 +422,80 @@ public sealed class CdController
         int f = (ff >> 4) * 10 + (ff & 0xF);
         return (m * 60 + s) * 75 + f - 150;
     }
+
+    // ---- Savestate ------------------------------------------------------------------
+    // Games driven through the BIOS/libds HLE (Parasite Eve) never touch these fields, so
+    // for them this block round-trips zeros and changes nothing. It exists for the MMIO
+    // path (Brave Fencer Musashi), where the drive IS this state: a load that restored RAM
+    // but left _reading/_streamPending/_irqFlags as they were would resume with a drive
+    // either stalled or streaming sectors the restored game is no longer expecting.
+    //
+    // Deliberately NOT captured: _fs (the mounted disc is host-owned and outlives a state;
+    // restoring it would fight the disc picker), _m, and _dispatching (transient — it is
+    // false at any point safe enough to take a state at all).
+    public void SaveState(BinaryWriter w)
+    {
+        w.Write(_shellOpenUntil);
+        w.Write(_shellLatch);
+        w.Write(_index);
+        w.Write(_irqFlags);
+        w.Write(_lastIrq);
+        w.Write(_seekLba);
+        w.Write(_mode);
+        w.Write(_dataFifoPos);
+        w.Write(_dataReady);
+        w.Write(_reading);
+        w.Write(_streamPending);
+        w.Write(_sectorBudget);
+        w.Write(_dataBuf.Length);
+        w.Write(_dataBuf);
+        WriteBytes(w, _paramFifo);
+        WriteBytes(w, _responseFifo);
+        w.Write(_pendingIrqs.Count);
+        foreach (var (irqType, response) in _pendingIrqs)
+        {
+            w.Write(irqType);
+            w.Write(response.Length);
+            w.Write(response);
+        }
+    }
+
+    public void LoadState(BinaryReader r)
+    {
+        _shellOpenUntil = r.ReadInt64();
+        _shellLatch = r.ReadBoolean();
+        _index = r.ReadByte();
+        _irqFlags = r.ReadByte();
+        _lastIrq = r.ReadByte();
+        _seekLba = r.ReadInt32();
+        _mode = r.ReadByte();
+        _dataFifoPos = r.ReadInt32();
+        _dataReady = r.ReadBoolean();
+        _reading = r.ReadBoolean();
+        _streamPending = r.ReadBoolean();
+        _sectorBudget = r.ReadDouble();
+        _dataBuf = r.ReadBytes(r.ReadInt32());
+        ReadBytes(r, _paramFifo);
+        ReadBytes(r, _responseFifo);
+        _pendingIrqs.Clear();
+        int n = r.ReadInt32();
+        for (int i = 0; i < n; i++)
+        {
+            byte irqType = r.ReadByte();
+            _pendingIrqs.Enqueue((irqType, r.ReadBytes(r.ReadInt32())));
+        }
+    }
+
+    static void WriteBytes(BinaryWriter w, Queue<byte> q)
+    {
+        w.Write(q.Count);
+        foreach (var b in q) w.Write(b);
+    }
+
+    static void ReadBytes(BinaryReader r, Queue<byte> q)
+    {
+        q.Clear();
+        int n = r.ReadInt32();
+        for (int i = 0; i < n; i++) q.Enqueue(r.ReadByte());
+    }
 }

@@ -304,6 +304,13 @@ public sealed class PSMemory : IMemory
         ReadInto(r, _hwregs);
     }
 
+    // The interrupt registers are NOT part of the _hwregs array above -- they are handled
+    // as special cases in Read/Write and live in their own fields, so a state that saved
+    // only the raw windows lost them. Zero for any game on the legacy BIOS-HLE path
+    // (HwIrqModel off never writes _iStat), so this round-trips harmlessly there.
+    public void SaveIrqState(BinaryWriter w) { w.Write(_iStat); w.Write(_iMask); }
+    public void LoadIrqState(BinaryReader r) { _iStat = r.ReadUInt32(); _iMask = r.ReadUInt32(); }
+
     static void ReadInto(BinaryReader r, byte[] dst)
     {
         int len = r.ReadInt32();

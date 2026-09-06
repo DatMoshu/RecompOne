@@ -81,6 +81,7 @@ public static class Runtime
         if (!turbo) Host.CaptureManager.Tick(FrameCount); // --snap-window / --dump (engine-level, off by default)
         if (!turbo) Audio.Attach(Spu);      // don't drive audio at fast-forward speed
         Host.Tas.Tick();          // apply replay input / capture record input for this frame
+        Host.AutoState.Tick(FrameCount); // raise a periodic savestate request (the game host decides if it's safe)
         Host.DriveRecorder.Tick();
         if (!turbo && !paced) FrameClock.Throttle();  // uncapped while fast-forwarding or already paced
         Sdk.LibCd.Tick();

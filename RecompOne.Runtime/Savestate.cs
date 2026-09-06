@@ -15,7 +15,16 @@ namespace RecompOne.Runtime;
 public static class Savestate
 {
     const uint Magic = 0x52315353; // "R1SS"
-    const int Version = 1;
+
+    // v2 appended a TRAILING block (interrupt registers, Interrupts deferred bits, CD
+    // controller) needed by ports that drive the drive at raw MMIO under the hardware-IRQ
+    // model. It is trailing, and the reader still accepts v1, deliberately: v1 files
+    // legitimately have no such state -- a game on the legacy BIOS-HLE path never writes
+    // any of it -- so refusing them would invalidate every existing state for no benefit.
+    // MinVersion is the real compatibility floor; bump it only when an older file would
+    // actually restore WRONG rather than merely restore less.
+    const int Version = 2;
+    const int MinVersion = 1;
 
     // Host sets these on a keypress; the host is responsible for calling
     // SaveToFile/LoadFromFile at the safe point (these are just a mailbox).
@@ -31,6 +40,12 @@ public static class Savestate
     // will be and delete the affordance). A game host that never sets this behaves
     // exactly as before.
     public static bool ForceLoadPending;
+
+    // Periodic automatic capture (Host/AutoState.cs raises this; a game host consumes it at
+    // its own safe point, exactly like SavePending). Kept separate from SlotPath/SavePending
+    // so an automatic capture can never overwrite the slot the user is manually saving to
+    // with F5. See Host/AutoState.cs for the policy.
+    public static string? AutoSavePath;
 
     public static byte[] Capture(CpuContext c)
     {
@@ -62,6 +77,22 @@ public static class Savestate
         BiosB.SaveState(w);
         LibEtc.SaveState(w);
 
+        // --- v2 trailing block -------------------------------------------------------
+        ((PSMemory)Runtime.Mem!).SaveIrqState(w);
+        Interrupts.SaveState(w);
+        // Length-prefixed so a reader that has no CD controller (or a future block appended
+        // after this one) can skip it without desynchronising the stream.
+        if (Runtime.Cd == null) w.Write(0);
+        else
+        {
+            using var cdMs = new MemoryStream();
+            using (var cdW = new BinaryWriter(cdMs, System.Text.Encoding.UTF8, leaveOpen: true))
+                Runtime.Cd.SaveState(cdW);
+            var cdBytes = cdMs.ToArray();
+            w.Write(cdBytes.Length);
+            w.Write(cdBytes);
+        }
+
         w.Flush();
         return ms.ToArray();
     }
@@ -72,7 +103,8 @@ public static class Savestate
         using var r = new BinaryReader(ms);
         if (r.ReadUInt32() != Magic) throw new InvalidDataException("savestate: bad magic");
         int ver = r.ReadInt32();
-        if (ver != Version) throw new InvalidDataException($"savestate: version mismatch (got {ver}, expected {Version})");
+        if (ver < MinVersion || ver > Version)
+            throw new InvalidDataException($"savestate: version mismatch (got {ver}, this build reads {MinVersion}..{Version})");
 
         c.LoadState(r);
         ((PSMemory)Runtime.Mem!).LoadState(r);
@@ -97,6 +129,19 @@ public static class Savestate
         LibCd.LoadState(r);
         BiosB.LoadState(r);
         LibEtc.LoadState(r);
+
+        // --- v2 trailing block -------------------------------------------------------
+        // Absent from a v1 file, which is correct rather than lossy: v1 could only have
+        // been written by a build/game that never populated any of it.
+        if (ver < 2) return;
+        ((PSMemory)Runtime.Mem!).LoadIrqState(r);
+        Interrupts.LoadState(r);
+        int cdLen = r.ReadInt32();
+        if (cdLen <= 0) return;
+        var cdBytes = r.ReadBytes(cdLen);
+        if (Runtime.Cd == null) return; // nothing to restore into; block already consumed
+        using var cdR = new BinaryReader(new MemoryStream(cdBytes));
+        Runtime.Cd.LoadState(cdR);
     }
 
     public static void SaveToFile(string path, CpuContext c) => File.WriteAllBytes(path, Capture(c));

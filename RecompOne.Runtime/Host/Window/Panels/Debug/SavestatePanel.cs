@@ -145,8 +145,49 @@ public sealed class SavestatePanel : IPanel
             ImGui.PopID();
         }
 
+        DrawAutoStates(safe);
+
         IsOpen = open;
         ImGui.End();
+    }
+
+    // Automatic captures (Host/AutoState.cs) live in their own directory and are pruned to
+    // the newest few as the run goes on. They are listed separately, and labelled, so nobody
+    // has to wonder whether one of these is something they saved and meant to keep: everything
+    // in this section is disposable by design and will be deleted by retention on its own.
+    static void DrawAutoStates(bool safe)
+    {
+        if (!Directory.Exists(AutoState.Dir)) return;
+
+        var files = new DirectoryInfo(AutoState.Dir)
+            .GetFiles($"{AutoState.Prefix}*.sav")
+            .OrderByDescending(f => f.LastWriteTimeUtc)
+            .ToList();
+        if (files.Count == 0) return;
+
+        ImGui.Separator();
+        if (!ImGui.CollapsingHeader($"Automatic (disposable) — {files.Count} kept")) return;
+        ImGui.TextDisabled($"Captured every {AutoState.IntervalFrames / 60.0:0.#}s into {AutoState.Dir}/.");
+        ImGui.TextDisabled($"Oldest are deleted automatically; only the newest {AutoState.Keep} are kept.");
+
+        foreach (var f in files)
+        {
+            bool current = !Savestate.TryReadHeader(f.FullName, out var isState, out _) || !isState
+                           || Savestate.IsCurrentVersion(f.FullName);
+            ImGui.PushID(f.FullName);
+            ImGui.TextUnformatted($"{f.Name}   {f.LastWriteTime:HH:mm:ss}");
+            if (!current) { ImGui.SameLine(); ImGui.TextColored(new Vector4(1f, 0.4f, 0.4f, 1f), "STALE"); }
+            ImGui.SameLine();
+            bool canLoad = current && safe;
+            if (!canLoad) ImGui.BeginDisabled();
+            if (ImGui.SmallButton("Load"))
+            {
+                Savestate.SlotPath = f.FullName;
+                Savestate.LoadPending = true;
+            }
+            if (!canLoad) ImGui.EndDisabled();
+            ImGui.PopID();
+        }
     }
 
     static Dictionary<string, string>? LoadLabels()
