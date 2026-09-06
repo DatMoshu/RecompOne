@@ -61,6 +61,7 @@ public static class LibCd
     static byte[] _fifo = [];
     static int _fifoPos;
     static double _sectorCredit;
+    static bool _syncPending;
 
     internal static readonly object DiscLock = new();
     static readonly object _posGate = new();
@@ -90,7 +91,15 @@ public static class LibCd
     }
 
     public static void CdControl(CpuContext c, IMemory m) => c.V0 = (uint)(CommandWait(m, (byte)c.A0, c.A1, c.A2, 0) == 0 ? 1 : 0);
-    public static void CdControlF(CpuContext c, IMemory m) => c.V0 = (uint)(CommandWait(m, (byte)c.A0, c.A1, 0, 1) == 0 ? 1 : 0);
+    public static void CdControlF(CpuContext c, IMemory m)
+    {
+        c.V0 = (uint)(CommandWait(m, (byte)c.A0, c.A1, 0, 1) == 0 ? 1 : 0);
+        // CdControlF is fire-and-forget: the command completes later, and the game
+        // registers its sync callback AFTER this returns. Arm the completion for the
+        // next tick rather than calling it here, or it fires into a null callback --
+        // the same deferral CdController.StartRead needs for its first INT1.
+        if (ReadyCallbackReads && c.V0 != 0) _syncPending = true;
+    }
 
     public static void CdControlB(CpuContext c, IMemory m)
     {
@@ -136,6 +145,16 @@ public static class LibCd
     {
         bool xaMode = (_mode & 0x40) != 0;
 
+        // An async CdControlF completes here, one tick after it was issued, so the
+        // callback the game registers right after the call is the one that sees it.
+        // This is how PE2 gets from ReadN to reading: Fs_ReadNSyncCb is what installs
+        // the ready callback that then receives every sector.
+        if (ReadyCallbackReads && _syncPending)
+        {
+            _syncPending = false;
+            DeliverSync();
+        }
+
         if (_readActive && xaMode) return;
 
         if (ReadyCallbackReads && _readActive && _cbData == 0) { TickReadyReads(); return; }
@@ -154,6 +173,24 @@ public static class LibCd
             Dispatcher.LoadByLba(CurrentLba);
             if (_cbData != 0) { c.A0 = DataReady; c.A1 = 0; Dispatcher.Call(c, m, _cbData); }
         }
+        c.Restore(snap);
+    }
+
+    /// <summary>Fire the libcd sync callback for a completed asynchronous command.</summary>
+    static void DeliverSync()
+    {
+        if (_cbSync == 0) return;
+        var c = Runtime.Cpu;
+        var m = Runtime.Mem;
+        if (c == null || m == null) return;
+
+        _lastIntr = Complete;
+        _lastResult[0] = EffectiveStatus();
+
+        var snap = c.Snapshot();
+        c.A0 = Complete;
+        c.A1 = 0;
+        Dispatcher.Call(c, m, _cbSync);
         c.Restore(snap);
     }
 
@@ -329,6 +366,7 @@ public static class LibCd
         _fifo = [];
         _fifoPos = 0;
         _sectorCredit = 0;
+        _syncPending = false;
         Array.Clear(_pos);
         Array.Clear(_lastResult);
     }
