@@ -136,12 +136,15 @@ internal static unsafe class InputManager
         Event ev;
         while (_sdl.PollEvent(&ev) != 0)
         {
-            if (ev.Type == (uint)EventType.Controllerdeviceadded && _controller == null)
-                TryOpenController();
+            if (ev.Type == (uint)EventType.Controllerdeviceadded)
+            {
+                LastPadEvent = $"device added (index {ev.Cdevice.Which})";
+                if (_controller == null) TryOpenController();
+            }
             if (ev.Type == (uint)EventType.Controllerdeviceremoved)
             {
-                _sdl.GameControllerClose(_controller);
-                _controller = null;
+                LastPadEvent = $"device removed (id {ev.Cdevice.Which})";
+                if (_controller != null) { _sdl.GameControllerClose(_controller); _controller = null; }
             }
         }
     }
@@ -264,15 +267,72 @@ internal static unsafe class InputManager
         if (key == Key.F8) Savestate.SlotPath = "state1.sav";
     }
 
+    // --- Controller diagnostics (Host/Window/Panels/Debug/ControllerPanel.cs) ---------
+    // The panel needs to answer one question: is the pad missing because SDL never saw
+    // it, because it has no gamecontroller mapping, or because the game ignores it?
+    public static string LastPadEvent = "(none yet)";
+    public static string OpenResult = "(not attempted)";
+    public static bool SdlReady => _sdl != null;
+    public static int DeviceCount => _sdl?.NumJoysticks() ?? 0;
+
+    public static string ControllerName
+    {
+        get
+        {
+            if (_sdl == null) return "(SDL not initialised)";
+            if (_controller == null) return "(none open)";
+            var p = _sdl.GameControllerName(_controller);
+            return p == null ? "(unnamed)" : System.Runtime.InteropServices.Marshal.PtrToStringAnsi((nint)p) ?? "(unnamed)";
+        }
+    }
+
+    public static string[] DeviceList()
+    {
+        if (_sdl == null) return ["SDL not initialised"];
+        int n = _sdl.NumJoysticks();
+        if (n == 0) return ["no joysticks seen by SDL"];
+        var list = new string[n];
+        for (int i = 0; i < n; i++)
+        {
+            bool gc = _sdl.IsGameController(i) == SdlBool.True;
+            var np = gc ? _sdl.GameControllerNameForIndex(i) : _sdl.JoystickNameForIndex(i);
+            string nm = np == null ? "?" : System.Runtime.InteropServices.Marshal.PtrToStringAnsi((nint)np) ?? "?";
+            list[i] = gc ? $"{i}: {nm}" : $"{i}: {nm}   [NO gamecontroller mapping - unusable]";
+        }
+        return list;
+    }
+
+    public static bool RawButton(int b)
+        => _sdl != null && _controller != null && _sdl.GameControllerGetButton(_controller, (GameControllerButton)b) != 0;
+
+    public static short RawAxis(int a)
+        => _sdl != null && _controller != null ? _sdl.GameControllerGetAxis(_controller, (GameControllerAxis)a) : (short)0;
+
+    // Manual re-scan: closes any open pad and re-opens the first usable one. Covers the
+    // case where the pad was claimed by another process (an emulator) at start-up.
+    public static void Rescan()
+    {
+        if (_sdl == null) { OpenResult = "SDL not initialised"; return; }
+        if (_controller != null) { _sdl.GameControllerClose(_controller); _controller = null; }
+        _sdl.JoystickUpdate();
+        TryOpenController();
+    }
+
     static void TryOpenController()
     {
-        if (_sdl == null) return;
+        if (_sdl == null) { OpenResult = "SDL not initialised"; return; }
         int n = _sdl.NumJoysticks();
+        if (n == 0) { OpenResult = "no joysticks present"; return; }
+        int mapped = 0;
         for (int i = 0; i < n; i++)
         {
             if (_sdl.IsGameController(i) != SdlBool.True) continue;
+            mapped++;
             _controller = _sdl.GameControllerOpen(i);
-            if (_controller != null) break;
+            if (_controller != null) { OpenResult = $"opened device {i}"; return; }
         }
+        OpenResult = mapped == 0
+            ? $"{n} joystick(s) present but none has a gamecontroller mapping"
+            : $"{mapped} mapped device(s) present but GameControllerOpen failed";
     }
 }

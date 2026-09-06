@@ -45,6 +45,23 @@ public static class LibCd
     static byte _filterFile;
     static byte _filterChannel;
 
+    /// <summary>
+    /// Opt-in libcd read model for games whose CD data path is driven entirely by the
+    /// <i>ready</i> callback (one INT1 per sector) instead of a data/read callback:
+    /// ReadN hands the ready callback one paced sector at a time, and CdGetSector acts
+    /// as a cursor over the CD data FIFO so the callback can pull the sector header and
+    /// the payload out in separate calls -- the shape every libcd game uses:
+    /// <c>CdGetSector(loc, 3); CdPosToInt(loc); CdGetSector(buf, 0x200);</c>
+    /// Default OFF, so ports that predate it stay byte-identical (Parasite Eve drives
+    /// the CD through libds, Brave Fencer Musashi through raw CdController MMIO).
+    /// Parasite Eve II sets it in its Program.cs.
+    /// </summary>
+    public static bool ReadyCallbackReads;
+
+    static byte[] _fifo = [];
+    static int _fifoPos;
+    static double _sectorCredit;
+
     internal static readonly object DiscLock = new();
     static readonly object _posGate = new();
 
@@ -121,6 +138,8 @@ public static class LibCd
 
         if (_readActive && xaMode) return;
 
+        if (ReadyCallbackReads && _readActive && _cbData == 0) { TickReadyReads(); return; }
+
         if (!_readActive || _cbData == 0) return;
         var c = Runtime.Cpu;
         var m = Runtime.Mem;
@@ -134,6 +153,43 @@ public static class LibCd
             AdvancePos(1);
             Dispatcher.LoadByLba(CurrentLba);
             if (_cbData != 0) { c.A0 = DataReady; c.A1 = 0; Dispatcher.Call(c, m, _cbData); }
+        }
+        c.Restore(snap);
+    }
+
+    /// <summary>ReadN under <see cref="ReadyCallbackReads"/>: deliver whole sectors at
+    /// real drive speed, one ready-callback (INT1) each. The FIFO is latched before the
+    /// call because the callback reads the sector back out through CdGetSector, and the
+    /// position only advances afterwards so the header the callback validates is the
+    /// sector it was just notified about.</summary>
+    static void TickReadyReads()
+    {
+        if (_cbReady == 0) return;
+        var c = Runtime.Cpu;
+        var m = Runtime.Mem;
+        if (c == null || m == null || Runtime.Cd == null) return;
+
+        _sectorCredit += SectorsPerSecond / 60.0;
+        int n = (int)_sectorCredit;
+        if (n <= 0) return;
+        _sectorCredit -= n;
+
+        int size = (_mode & ModeSize1) != 0 ? 2340 : 2048;
+        var snap = c.Snapshot();
+        for (int i = 0; i < n && _readActive && _cbReady != 0; i++)
+        {
+            int lba = CurrentLba;
+            Dispatcher.LoadByLba(lba);
+            lock (DiscLock) _fifo = Runtime.Cd.ReadSectorData(lba, size);
+            _fifoPos = 0;
+            _lastIntr = DataReady;
+            _lastResult[0] = EffectiveStatus();
+
+            c.A0 = DataReady;
+            c.A1 = 0;
+            Dispatcher.Call(c, m, _cbReady);
+
+            if (_readActive) AdvancePos(1);
         }
         c.Restore(snap);
     }
@@ -194,6 +250,19 @@ public static class LibCd
     {
         uint madr = c.A0;
         int words = (int)c.A1;
+
+        if (ReadyCallbackReads)
+        {   // Cursor over the current sector's FIFO: the first call takes the 4-byte
+            // header + 8-byte subheader, the next takes the 2048-byte payload.
+            int avail = Math.Max(0, _fifo.Length - _fifoPos);
+            int n = Math.Min(words * 4, avail);
+            for (int j = 0; j < n; j++)
+                m.WriteU8(madr + (uint)j, _fifo[_fifoPos + j]);
+            _fifoPos += n;
+            c.V0 = 1;
+            return;
+        }
+
         int lba = CurrentLba;
         byte[] data;
         lock (DiscLock) data = Runtime.Cd!.ReadSectorData(lba);
@@ -257,6 +326,9 @@ public static class LibCd
         _readActive = false;
         _xaActive = false;
         _filterFile = _filterChannel = 0;
+        _fifo = [];
+        _fifoPos = 0;
+        _sectorCredit = 0;
         Array.Clear(_pos);
         Array.Clear(_lastResult);
     }

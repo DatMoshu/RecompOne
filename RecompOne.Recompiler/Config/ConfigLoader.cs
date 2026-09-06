@@ -44,6 +44,10 @@ public sealed class OverlayConfig
     [JsonPropertyName("funcMap")] public string? FuncMap { get; set; }
     [JsonPropertyName("base")] public string? Base { get; set; }
     [JsonPropertyName("file")] public string? File { get; set; }
+    // Host-side binary image (path relative to the config) for code the disc only holds
+    // packed/compressed — e.g. a RAM dump of a decompressed module. Pair with "base";
+    // "lba" (optional) still names the disc read that activates it.
+    [JsonPropertyName("bin")] public string? Bin { get; set; }
     [JsonPropertyName("offset")] public int Offset { get; set; } = 0;
     [JsonPropertyName("skip")] public int Skip { get; set; } = 0;
     [JsonPropertyName("lba")] public int Lba { get; set; } = -1;

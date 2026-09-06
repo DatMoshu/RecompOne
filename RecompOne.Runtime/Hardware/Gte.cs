@@ -133,11 +133,14 @@ public static class Gte
         PushColor();
     }
 
+    // NCCS/NCCT/CC: [MAC] = ([RGB] * [IR]) SHL 4, then SAR (sf*12) like every other op.
+    // The shift was hard-coded to 0, so lit colors overflowed 4096x and saturated to
+    // 0xFF -> every lit textured model rendered at double brightness (washed out).
     static void Modulate(int sf, bool lm)
     {
-        SetMac(1, ((long)RGBC_R * IR1) << 4, 0, lm);
-        SetMac(2, ((long)RGBC_G * IR2) << 4, 0, lm);
-        SetMac(3, ((long)RGBC_B * IR3) << 4, 0, lm);
+        SetMac(1, ((long)RGBC_R * IR1) << 4, sf, lm);
+        SetMac(2, ((long)RGBC_G * IR2) << 4, sf, lm);
+        SetMac(3, ((long)RGBC_B * IR3) << 4, sf, lm);
         PushColor();
     }
 

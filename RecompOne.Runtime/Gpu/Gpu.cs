@@ -117,8 +117,11 @@ public sealed partial class Gpu
         return (uint)(lo | (hi << 16));
     }
 
+    public long Gp0Words, Gp1Words; // diagnostic counters (host-visible)
+
     public void WriteGp0(uint word)
     {
+        Gp0Words++;
         if (_loadImage) { StoreImageHalfword((ushort)word); StoreImageHalfword((ushort)(word >> 16)); return; }
         if (_polyline)
         {
@@ -140,6 +143,7 @@ public sealed partial class Gpu
 
     public void WriteGp1(uint word)
     {
+        Gp1Words++;
         uint op = (word >> 24) & 0xFF;
         uint p = word & 0xFFFFFF;
         switch (op)

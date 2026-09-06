@@ -14,6 +14,7 @@ public sealed class Dma
     CdController? _cd;
 
     uint _dicr;
+    public readonly long[] Runs = new long[7]; // diagnostic: transfers per channel
 
     public Dma(IMemory mem, Gpu gpu, Spu spu, Mdec mdec, Action raiseIrq)
     {
@@ -40,6 +41,7 @@ public sealed class Dma
     public void Run(int channel, uint madr, uint bcr, uint chcr)
     {
         Log.Dma($"ch{channel} madr=0x{madr:X8} bcr=0x{bcr:X8} chcr=0x{chcr:X8}");
+        if ((uint)channel < 7u) Runs[channel]++;
         switch (channel)
         {
             case 0: TransferMdecIn(madr, bcr); break;

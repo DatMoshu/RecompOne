@@ -264,9 +264,22 @@ public sealed class GlBackend : IGpuBackend
         _kClipX0 = _env.ClipX0; _kClipY0 = _env.ClipY0; _kClipX1 = _env.ClipX1; _kClipY1 = _env.ClipY1;
     }
 
+    // debug: RECOMP_COLORHIST=1 prints a histogram of submitted vertex colors (textured tris) every 300 frames
+    static readonly bool _colorHist = Environment.GetEnvironmentVariable("RECOMP_COLORHIST") == "1";
+    static readonly int[] _hist = new int[8]; static int _histRaw, _histFlat, _histN;
+    public static void ColorHistFrame()
+    {
+        if (!_colorHist || ++_histN % 300 != 0) return;
+        Console.WriteLine($"[colorhist] texturedTris raw={_histRaw} lit={_histFlat} maxRGB buckets(0-31,32-63,..): {string.Join(",", _hist)}");
+        Array.Clear(_hist); _histRaw = _histFlat = 0;
+    }
     GlVertex V(in HleVertex v, in PrimFlags f)
     {
         uint color = (f.Textured && f.RawTexture) ? 0x808080u : (uint)(v.R | (v.G << 8) | (v.B << 16));
+        if (_colorHist && f.Textured)
+        {
+            if (f.RawTexture) _histRaw++; else { _histFlat++; _hist[Math.Max(v.R, Math.Max(v.G, v.B)) >> 5]++; }
+        }
         return new GlVertex
         {
             X = v.X, Y = v.Y,

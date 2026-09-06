@@ -44,7 +44,7 @@ internal static class HostWindow
         {
             var options = WindowOptions.Default with
             {
-                Size = new Vector2D<int>(1280, 720),
+                Size = Runtime.WindowSize is { } ws ? new Vector2D<int>(ws.W, ws.H) : new Vector2D<int>(ConfigManager.View.WindowWidth, ConfigManager.View.WindowHeight),
                 Title = title,
                 VSync = false,
                 UpdatesPerSecond = 0,
@@ -74,6 +74,7 @@ internal static class HostWindow
             Console.WriteLine(e.Message);
         }
         if (_window.IsClosing) { Runtime.Shutdown(); Environment.Exit(0); }
+        UpdateTitleFps();
         InputManager.Poll();
         if (InputManager.ConsumeTopBarToggle())
         {
@@ -99,6 +100,20 @@ internal static class HostWindow
         if ((_pumpCounter++ & 63) != 0) return; // ~once per 64 fast-forwarded frames
         try { _window.DoEvents(); } catch { }
         if (_window.IsClosing) { Runtime.Shutdown(); Environment.Exit(0); }
+    }
+
+    // Frame rate in the title bar: visible without opening a panel and cheap enough to leave on.
+    static string _baseTitle = "";
+    static readonly System.Diagnostics.Stopwatch _titleClock = System.Diagnostics.Stopwatch.StartNew();
+    static double _titleNextMs;
+    static void UpdateTitleFps()
+    {
+        if (_window == null) return;
+        double now = _titleClock.Elapsed.TotalMilliseconds;
+        if (now < _titleNextMs) return;
+        _titleNextMs = now + 500.0;
+        if (_baseTitle.Length == 0) _baseTitle = _window.Title;
+        _window.Title = $"{_baseTitle}  -  {Runtime.Fps:F1} fps";
     }
 
     public static void Shutdown()
@@ -162,6 +177,7 @@ internal static class HostWindow
         PanelManager.Register(new RamHexPanel());
         PanelManager.Register(new DmaViewerPanel());
         PanelManager.Register(new OverlayEventsPanel());
+        PanelManager.Register(new ControllerPanel());
         PanelManager.Register(new SettingsPopup());
         PanelManager.Register(new AboutPopup());
 

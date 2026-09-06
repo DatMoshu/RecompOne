@@ -192,6 +192,13 @@ public static class BiosA
                     BiosB.DeliverEvent(0xF4000001u, 0x0004u);
                     c.V0 = (uint)n; LastErrno = 0; break;
                 }
+                if (fd <= 1u) // TTY stdout/stderr: print and report full length written
+                {
+                    if (Log.BiosOn) Log.Bios($"write fd={fd} len={c.A2} '{Bios.ReadString(m, c.A1)}'");
+                    for (uint i = 0; i < c.A2; i++) Console.Write((char)m.ReadU8(c.A1 + i));
+                    c.V0 = c.A2; LastErrno = 0; break;
+                }
+                if (Log.BiosOn) Log.Bios($"write fd={fd} len={c.A2} -> EBADF");
                 c.V0 = 0xFFFFFFFFu; LastErrno = 9; break;
             }
             case 0x04:
@@ -353,7 +360,9 @@ public static class BiosA
             case 0x43: c.V0 = NextFile(m, c.A0); break;        // nextfile(DIRENTRY*)
             case 0x44: break;
             case 0x45: break;
-            case 0x46: case 0x47: case 0x48: case 0x49:
+            case 0x48: Runtime.Gpu?.WriteGp1(c.A0); c.V0 = 0u; break; // SendGP1Command(gp1cmd)
+            case 0x49: Runtime.Gpu?.WriteGp0(c.A0); c.V0 = 0u; break; // GPU_cw(gp0cmd)
+            case 0x46: case 0x47:
             case 0x4A: case 0x4B: case 0x4C: break;
             case 0x4D: c.V0 = 0u; break;
             case 0x4E: break;

@@ -35,6 +35,7 @@ foreach (var overlay in config.Overlays)
     overlay.Elf = ResolvePath(overlay.Elf);
     overlay.Map = ResolvePath(overlay.Map);
     overlay.FuncMap = ResolvePath(overlay.FuncMap);
+    overlay.Bin = ResolvePath(overlay.Bin);
 }
 
 string cuePath = Path.GetFullPath(Path.Combine(configDir, config.Cue));

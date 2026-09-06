@@ -24,12 +24,36 @@ public static class Dispatcher
 
     public static readonly HashSet<string> SkipOverlays = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>Loading an overlay unloads any active overlay whose address range it covers.</summary>
+    public static bool EvictOverlapping;
+
     public static void Load(string name)
     {
         if (SkipOverlays.Contains(name)) return;
         if (!_registry.TryGetValue(name, out var overlay))
             throw new KeyNotFoundException($"overlay not registered: {name}");
 
+        // Slot semantics: a module loaded over another module's address range replaces it.
+        // Evict active overlays (never the main EXE table) whose function range overlaps
+        // the incoming one, so stale entries of the previous occupant can't be called.
+        // Opt-in: a game whose overlays deliberately co-exist in one region (a resident
+        // module plus per-room chunks sharing a base) must keep both sets callable.
+        if (EvictOverlapping && overlay.Functions.Count > 0)
+        {
+            uint lo = overlay.Functions.Keys.Min(), hi = overlay.Functions.Keys.Max();
+            foreach (var other in _active.Where(n => n != name && n != "main").ToList())
+            {
+                var f = _registry[other].Functions;
+                if (f.Count == 0) continue;
+                if (f.Keys.Min() <= hi && f.Keys.Max() >= lo)
+                {
+                    _active.Remove(other);
+                    Runtime.OverlayLog.Record(other, OverlayEventKind.Unloaded);
+                    Console.WriteLine($"[Dispatcher] evicted overlay: {other} (slot taken by {name})");
+                }
+            }
+            Rebuild();
+        }
         bool already = _active.Remove(name);
         _active.Add(name);
         foreach (var (addr, fn) in overlay.Functions)
@@ -54,6 +78,10 @@ public static class Dispatcher
     }
 
     public static bool LenientCalls;
+
+    // Host-installed unmapped-call observer (e.g. a room auto-mapper): return true to
+    // treat the call as a no-op (V0=0) and keep running, false to throw as usual.
+    public static Func<uint, bool>? OnUnmapped;
 
     // Used by the jr-jumptable `default` path: an indirect jump whose target the
     // analyzer couldn't resolve to a local label is dispatched as a call, but the
@@ -82,7 +110,7 @@ public static class Dispatcher
         if (BiosKernel.TryDispatch(c, m, addr)) return;
         if (!_funcMap.TryGetValue(addr, out var fn))
         {
-            if (LenientCalls) { c.V0 = 0; return; } // treat unmapped call as a no-op
+            if (LenientCalls || (OnUnmapped != null && OnUnmapped(addr))) { c.V0 = 0; return; } // treat unmapped call as a no-op
             throw new InvalidOperationException($"unmapped call: 0x{addr:X8}  [{Sdk.LibDs.DescribeLoadFor(addr)}]");
         }
         fn(c, m);

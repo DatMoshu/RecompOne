@@ -38,23 +38,45 @@ public static class LibEtc
         }
         if (mode < 0)
         {
-            if (PollDrivesFrame)
+            // Inside an interrupt handler the vblank counter cannot advance (the VBLANK ISR
+            // can't preempt another ISR), so a VSync(-1) poll from a CD/DMA callback must
+            // return a constant and must NOT present a frame or pump CD sectors — doing so
+            // re-entered libcd's getintr loop with a fresh INT1 and nested libcdstream's
+            // ready callback one level per sector until the stack was gone (BFM STR hang).
+            if (PollDrivesFrame && !Interrupts.InDeliver)
             {
                 double now = _pollClock.Elapsed.TotalMilliseconds;
                 if (now >= _nextPollTickMs)
                 {
-                    _nextPollTickMs = (now > _nextPollTickMs + 100 ? now : _nextPollTickMs) + VBlankMs;
-                    Runtime.PresentFrame();
-                    _vcount++;
+                    Runtime.PresentFrame(paced: true); // this gate already waited out the vblank
+                    Advance(now);
                 }
             }
             c.V0 = (uint)_vcount; return;
         }
         if (mode == 1) { c.V0 = 0; return; }
 
-        Runtime.PresentFrame();
-        _vcount++;
+        // VSync(0) waits for the next vblank; VSync(n>1) waits until n vblanks have passed
+        // since the previous VSync wait (PSYQ libetc). Since no vblanks elapse here between
+        // calls, that is n presented frames: PE1 paces the field with VSync(2) (30 fps) and
+        // FMV/loading with VSync(4) — treating them as 1 ran the game at double speed.
+        int n = mode == 0 ? 1 : mode;
+        for (int i = 0; i < n; i++)
+        {
+            Runtime.PresentFrame();
+            Advance(_pollClock.Elapsed.TotalMilliseconds);
+        }
         c.V0 = 0;
+    }
+
+    // One vblank has now been consumed, whichever path produced it. Both the blocking wait
+    // and the VSync(-1) poll gate go through here so a game that does both (Brave Fencer
+    // Musashi polls, then blocks once it reaches the title) still advances at 60 Hz overall
+    // instead of one frame per path per period.
+    static void Advance(double nowMs)
+    {
+        _vcount++;
+        _nextPollTickMs = (nowMs > _nextPollTickMs ? nowMs : _nextPollTickMs) + VBlankMs;
     }
 
     public static void SaveState(BinaryWriter w) => w.Write(_vcount);

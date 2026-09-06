@@ -163,15 +163,24 @@ public static class LibDs
     // crashes with the overlay config line to add.
     public static string DescribeLoadFor(uint addr)
     {
+        var hit = FindLoadFor(addr);
+        if (hit is { } h)
+            return $"in chunk: DsRead lba={h.lba} sectors={h.sectors} size={h.sectors * h.size} base=0x{h.buf | 0x80000000u:X8} — add this as an overlay";
+        return "no recent chunk load covers this address";
+    }
+
+    // Structured form of DescribeLoadFor: the most recent chunk load covering addr.
+    public static (int lba, int sectors, uint buf, int size)? FindLoadFor(uint addr)
+    {
         addr &= 0x1FFFFFFFu;
         for (int k = 1; k <= RecentN; k++)
         {
             var (lba, sectors, buf, size) = _recentLoads[((_recentIdx - k) % RecentN + RecentN) % RecentN];
             if (sectors == 0) continue;
             if (addr >= buf && addr < buf + (uint)(sectors * size))
-                return $"in chunk: DsRead lba={lba} sectors={sectors} size={sectors * size} base=0x{buf | 0x80000000u:X8} — add this as an overlay";
+                return (lba, sectors, buf, size);
         }
-        return "no recent chunk load covers this address";
+        return null;
     }
 
     // After a savestate load, re-run overlay activation for the chunks that were resident

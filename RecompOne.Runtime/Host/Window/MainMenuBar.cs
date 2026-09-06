@@ -83,6 +83,11 @@ internal static class MainMenuBar
             Toggle<OverlayEventsPanel>("Overlay Events");
             ImGui.EndMenu();
         }
+        if (ImGui.BeginMenu("Input"))
+        {
+            Toggle<ControllerPanel>("Controller");
+            ImGui.EndMenu();
+        }
 
         ImGui.Separator();
 

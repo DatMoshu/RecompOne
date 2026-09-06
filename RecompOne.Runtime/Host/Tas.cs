@@ -19,7 +19,8 @@ public static class Tas
     // fast-forward early (at a chosen frame) so the tail plays at real speed.
     public static bool Turbo;
     public static long TurboUntil = long.MaxValue;
-    public static bool TurboActive => Turbo && Playing && Frame < TurboUntil;
+    public static bool ForceTurbo;   // fast-forward regardless of replay state (auto-mapper)
+    public static bool TurboActive => ForceTurbo || (Turbo && Playing && Frame < TurboUntil);
 
     static string _recPath = "tas.rec";
     static readonly System.Text.StringBuilder _rec = new();

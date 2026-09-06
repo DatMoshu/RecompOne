@@ -327,6 +327,9 @@ public static class BiosB
         if (i < MaxThreads) _tcbs[i] = default;
     }
 
+    /// <summary>Heads of the four kernel interrupt-handler chains built by SysEnqIntRP.</summary>
+    public static uint IntChainHead(int priority) => _intChain[priority & 3];
+
     public static void SysEnqIntRP(CpuContext c, IMemory m)
     {
         uint priority = c.A0 & 3u;

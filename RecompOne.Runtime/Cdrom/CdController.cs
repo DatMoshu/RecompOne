@@ -17,6 +17,7 @@ public sealed class CdController
     private readonly Queue<(byte irqType, byte[] response)> _pendingIrqs = new();
     private byte _irqFlags;
     private int _seekLba;
+    private byte _mode;
     private byte[] _dataBuf = new byte[2048];
 
     private int _dataFifoPos;
@@ -73,11 +74,14 @@ public sealed class CdController
             case 3:
                 if (_index == 0)
                 {
-                    if ((val & 0x80) != 0) { _dataFifoPos = 0; _dataReady = true; }
+                    // BFRD is edge-triggered: re-asserting it while the sector window is
+                    // already open must not rewind the FIFO (libcd strobes per DMA chunk).
+                    if ((val & 0x80) != 0) { if (!_dataReady) { _dataFifoPos = 0; _dataReady = true; } }
                     else _dataReady = false;
                 }
                 else if (_index == 1)
                 {
+                    RecompOne.Runtime.Log.Cd($"ack 0x{val:X2}: flags 0x{_irqFlags:X2} -> 0x{_irqFlags & ~val:X2}");
                     _irqFlags &= (byte)~val;
                     if (_irqFlags == 0) AfterAck();
                 }
@@ -87,7 +91,7 @@ public sealed class CdController
 
     private void ExecuteCommand(byte cmd)
     {
-        RecompOne.Runtime.Log.Cd($"cmd 0x{cmd:X2}");
+        RecompOne.Runtime.Log.Cd($"cmd 0x{cmd:X2} t={Environment.TickCount64 % 100000} count={_m.ReadU32(0x8006CFA0u)} remain={(int)_m.ReadU32(0x8006CFB4u)} lba={_seekLba}");
         var prms = new List<byte>();
         while (_paramFifo.Count > 0) prms.Add(_paramFifo.Dequeue());
 
@@ -102,10 +106,7 @@ public sealed class CdController
                 QueueIrq(3, [DriveStatus()]);
                 break;
             case 0x06: // ReadN
-                _reading = true;
-                ReadNextSector();
-                QueueIrq(3, [DriveStatus()]);
-                QueueIrq(1, [DriveStatus()]);
+                StartRead();
                 break;
             case 0x08: //Stop
                 _reading = false;
@@ -130,6 +131,7 @@ public sealed class CdController
                 QueueIrq(3, [DriveStatus()]);
                 break;
             case 0x0E: // set mode
+                if (prms.Count >= 1) _mode = prms[0];
                 QueueIrq(3, [DriveStatus()]);
                 break;
             case 0x13: // GetTN
@@ -147,17 +149,39 @@ public sealed class CdController
                 QueueIrq(3, [DriveStatus()]);
                 QueueIrq(2, [DriveStatus()]);
                 break;
-            case 0x1B: // read s
-                _reading = true;
-                ReadNextSector();
-                QueueIrq(3, [DriveStatus()]);
-                QueueIrq(1, [DriveStatus()]);
+            case 0x1B: // ReadS (streaming): fresh XA audio pipeline per stream
+                if (PSMemory.HwIrqModel) XaAudio.Reset();
+                StartRead();
                 break;
             default:
                 Console.WriteLine($"[CD] command 0x{cmd:X2} is unknow");
                 QueueIrq(5, [DriveStatus(), 0x40]);
                 break;
         }
+    }
+
+    // ReadN/ReadS: the INT3 ack is immediate, but the first sector-ready INT1 must
+    // NOT land inside the same command write. Real hardware delivers INT1 only after
+    // seek+read latency; libcd's CdRead arms its state (remaining = count) AFTER
+    // CdControlF(ReadN) returns, and its ready callback treats remaining==0 as
+    // "done" -> Pause. A synchronous INT1 therefore completed the read before it
+    // was armed and left CdReadSync stalling/retrying forever (BFM boot loop).
+    // With the hardware-IRQ model the per-frame streaming pump delivers the first
+    // INT1 next frame instead; the legacy path keeps the immediate delivery since
+    // nothing else pumps it.
+    private void StartRead()
+    {
+        _reading = true;
+        if (PSMemory.HwIrqModel)
+        {
+            Dispatcher.LoadByLba(_seekLba); // MMIO-driven games: a code overlay keyed on this read's LBA
+            _streamPending = true;
+            QueueIrq(3, [DriveStatus()]);
+            return;
+        }
+        ReadNextSector();
+        QueueIrq(3, [DriveStatus()]);
+        QueueIrq(1, [DriveStatus()]);
     }
 
     private void QueueIrq(byte irqType, byte[] response)
@@ -173,6 +197,18 @@ public sealed class CdController
         if (_pendingIrqs.Count > 0) { DeliverNext(); return; }
         if (_reading && _lastIrq == 1) _streamPending = true;
         ClearInInterrupt();
+    }
+
+    // Real drive pacing for MMIO-driven reads: 75 sectors/s at 1x, 150 at 2x (mode 0x80),
+    // i.e. 1.25 / 2.5 sectors per 60 Hz frame. Delivering sectors as fast as the game acks
+    // them (up to 16/frame) overran libcdstream's STR ring and fed the VLC decoder garbage.
+    private double _sectorBudget;
+    public int SectorsThisFrame()
+    {
+        _sectorBudget += (_mode & 0x80) != 0 ? 2.5 : 1.25;
+        int n = (int)_sectorBudget;
+        _sectorBudget -= n;
+        return n;
     }
 
     public bool AdvanceStreaming()
@@ -192,9 +228,11 @@ public sealed class CdController
         _irqFlags = irqType;
         _lastIrq = irqType;
         SetInInterrupt(1);
-        // Only sector-ready (INT1) drives the game's CDROM-IRQ handler; command
-        // acks (INT3/INT2/INT5) are consumed by the game's blocking poll path.
-        if (irqType == 1) _m.RaiseIrq(2); // no-op unless HwIrqModel
+        // libcd's ISR consumes every INT type (it reads the flags register, stores
+        // the response, and sets the Sync/Ready flags its poll path checks), so the
+        // CDROM hardware IRQ must fire for command acks too, not just sector-ready.
+        _m.RaiseIrq(2); // no-op unless HwIrqModel
+        DispatchSync();
     }
 
     private void DeliverNext()
@@ -205,7 +243,30 @@ public sealed class CdController
         _irqFlags = irqType;
         _lastIrq = irqType;
         SetInInterrupt(1);
-        if (irqType == 1) _m.RaiseIrq(2);
+        _m.RaiseIrq(2);
+        DispatchSync();
+    }
+
+    private bool _dispatching;
+
+    // CD_cw/CD_sync busy-spin on ISR-set flags without ever yielding to the
+    // per-frame pump, so a raised CDROM IRQ must be delivered right where the
+    // hardware would preempt: synchronously at the raising MMIO write. Guarded
+    // so an ack inside the ISR (AfterAck -> DeliverNext) can't recurse; the
+    // pending INT then lands on the next frame dispatch instead.
+    private void DispatchSync()
+    {
+        if (!PSMemory.HwIrqModel || _dispatching) return;
+        _dispatching = true;
+        try
+        {
+            // Loop: an INT queued from inside the handler (ack -> AfterAck -> DeliverNext,
+            // e.g. the completion Pause libcd issues from its ready callback) skips the
+            // nested dispatch and must be delivered once this outer dispatch unwinds.
+            for (int i = 0; i < 8 && _irqFlags != 0; i++)
+                Runtime.DispatchIrq(2); // CDROM slot of the game's handler table
+        }
+        finally { _dispatching = false; }
     }
 
     private byte ReadDataByte()
@@ -246,7 +307,27 @@ public sealed class CdController
     {
         try
         {
-            _dataBuf = _fs.ReadSector(_seekLba);
+            // Mode 0x40 (XA-ADPCM on): the drive consumes Form2 audio sectors itself —
+            // decodes them to the SPU CD-audio input and raises NO INT1 for them — so an
+            // STR stream's interleaved audio sectors never reach the data FIFO. Delivering
+            // them as data made libcdstream see a non-0x0160 header every 8th sector and
+            // reset its ring (BFM LOGOB.STR hang / VLC-decoder garbage). Mirror hardware.
+            if (PSMemory.HwIrqModel && (_mode & 0x40) != 0)
+            {
+                for (int guard = 0; guard < 64; guard++)
+                {
+                    var sub = _fs.ReadSectorData(_seekLba, 2336); // from the subheader
+                    if ((sub[2] & 0x04) == 0) break;
+                    XaAudio.DecodeSector(sub, 8, sub[3]);
+                    RecompOne.Runtime.Log.Cd($"xa lba={_seekLba} coding=0x{sub[3]:X2}");
+                    _seekLba++;
+                }
+            }
+            // Mode bit 0x20 = whole-sector reads: the data FIFO exposes 0x924 bytes
+            // from the sector header (header+subheader+data+EDC/ECC); libcd validates
+            // the 12-byte header/subheader before fetching the 2048 data bytes.
+            _dataBuf = (_mode & 0x20) != 0 ? _fs.ReadSectorData(_seekLba, 2340) : _fs.ReadSector(_seekLba);
+            RecompOne.Runtime.Log.Cd($"sector lba={_seekLba} mode=0x{_mode:X2} hdr={Convert.ToHexString(_dataBuf.AsSpan(0, Math.Min(16, _dataBuf.Length)))}");
             _seekLba++;
         }
         catch
@@ -327,7 +408,9 @@ public sealed class CdController
         QueueIrq(2, [DriveStatus()]);
     }
 
-    private byte DriveStatus() => (byte)(0x02 | ShellStatusBits());
+    // Bit 0x20 = reading (libcd's CdRead pauses a busy drive before re-issuing);
+    // only reported under the hardware-IRQ model so legacy HLE paths stay identical.
+    private byte DriveStatus() => (byte)(0x02 | (_reading && PSMemory.HwIrqModel ? 0x20 : 0) | ShellStatusBits());
 
     private static byte ToBcd(int v) => (byte)(((v / 10) << 4) | (v % 10));
     private static int BcdToInt(byte v) => (v >> 4) * 10 + (v & 0xF);

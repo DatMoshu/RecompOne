@@ -351,6 +351,10 @@ public static class FunctionDetector
         };
     }
 
+    // Longest span a single routine may occupy. PSY-Q output tops out far below this;
+    // anything larger means the decoder lost the trail in data.
+    const uint MaxFunctionSpan = 0x4000;
+
     static int RefineEnd(MipsInstruction[] all, int startIdx, int maxEndIdx)
     {
         maxEndIdx = Math.Clamp(maxEndIdx, startIdx + 1, all.Length);
@@ -363,9 +367,15 @@ public static class FunctionDetector
         // stay bounded (they may be tail calls into a separate function).
         int limit = maxEndIdx;
         uint reach = all[startIdx].Vram;
+        // Growing the window past the next detected start is only ever right for a shared
+        // tail a short way ahead. Overlays that are mostly data (BFM's PAC modules hold
+        // models/textures) decode "branches" out of that data with arbitrary targets; without
+        // a cap one function swallowed the whole blob and emitted an 84 MB source file.
+        uint spanCap = all[startIdx].Vram + MaxFunctionSpan;
         for (int i = startIdx; i < limit; i++)
         {
             var instr = all[i];
+            if (instr.Vram > spanCap) break; // runaway: treat as data and keep the conservative bound
             bool relBranch = instr.IsBranch && !instr.IsRegisterJump;
             if (instr.IsJump || relBranch)
             {
@@ -373,7 +383,7 @@ public static class FunctionDetector
                 if (tgt > reach && tgt > all[startIdx].Vram)
                 {
                     bool beyondWindow = tgt > all[limit - 1].Vram;
-                    if (relBranch && beyondWindow && tgt <= hiVram)
+                    if (relBranch && beyondWindow && tgt <= hiVram && tgt <= spanCap)
                     {
                         reach = tgt;
                         limit = all.Length; // termination is governed by the jr ra >= reach below
@@ -387,7 +397,11 @@ public static class FunctionDetector
                 return Math.Clamp(end, startIdx + 1, all.Length);
             }
         }
-        return limit;
+        // No terminating `jr ra` in range: keep the conservative bound, but never emit more
+        // than one function's worth of instructions — the gap to the next detected start can
+        // be hundreds of KB of data in a sparsely-rooted overlay.
+        int capped = startIdx + (int)(MaxFunctionSpan / 4);
+        return Math.Clamp(Math.Min(Math.Min(limit, maxEndIdx), capped), startIdx + 1, all.Length);
     }
     
     static bool IsFunctionEnd(MipsInstruction[] all, int startIdx, int i)

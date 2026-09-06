@@ -118,7 +118,13 @@ public static class OverlayWriter
         foreach (var overlayConfig in config.Overlays)
         {
             bool noSymbols = overlayConfig.Elf == null && overlayConfig.Map == null && overlayConfig.FuncMap == null;
-            if (noSymbols && !((overlayConfig.LinearSweep ?? config.LinearSweep) && overlayConfig.Base != null))
+            // With no symbol file the overlay still has a source if it has a load address plus
+            // either a linear sweep or an explicit function list (the recompiler then walks the
+            // call graph out from those roots) — the latter is how data-heavy overlays avoid
+            // having megabytes of models swept in as bogus code.
+            bool hasRoots = overlayConfig.Base != null &&
+                            ((overlayConfig.LinearSweep ?? config.LinearSweep) || overlayConfig.Functions.Length > 0);
+            if (noSymbols && !hasRoots)
             {
                 Console.WriteLine($"[Recompiler] WARNING: Overlay '{overlayConfig.Name}' has no source defined, this will be skiped");
                 continue;
@@ -212,6 +218,9 @@ public static class OverlayWriter
         var uniqueAddrs = allFuncs.GroupBy(f => f.Start).Where(g => g.Count() == 1).Select(g => g.Key).ToHashSet();
         var knownFuncs = allFuncs.Where(f => uniqueAddrs.Contains(f.Start)).ToDictionary(f => f.Start, f => $"{className}.{f.EmittedName}");
 
+        var funcOverlay = allFuncs.Where(f => uniqueAddrs.Contains(f.Start))
+                                  .ToDictionary(f => f.Start, f => f.OverlayName ?? "");
+
         int conflictCount = allFuncs.Count - knownFuncs.Count;
         Console.WriteLine($"[Recompiler] total functions: {allFuncs.Count}");
 
@@ -225,10 +234,25 @@ public static class OverlayWriter
             Console.WriteLine($"[Recompiler] main: {mainCall} @ 0x{mainAddr:X8}");
         }
 
+        // Stale outputs from a previous run (overlays since removed from the config) would still
+        // be compiled by the game project's `Recompiled\**` glob and reference old names — clear them.
+        foreach (var stale in Directory.GetFiles(outDir, "*.cs"))
+            File.Delete(stale);
+
         foreach (var result in overlayResults)
         {
             Console.WriteLine($"[Recompiler] emiting {result.Name}.cs ({result.Functions.Count} functions)");
-            EmitOverlayFile(result.Name, result.Functions, className, knownFuncs, config.Debug, result.LbaStart, outDir);
+            // A direct call may only be bound statically to a function in the SAME overlay, or
+            // in the main executable. Overlays are loaded into a small number of fixed slots, so
+            // several of them cover the same addresses with completely different code; binding
+            // across overlays let a call in one module land in a module that was never loaded.
+            // Cross-overlay targets go through the dispatcher, which resolves whatever is
+            // actually resident.
+            var scoped = knownFuncs
+                .Where(kv => funcOverlay.TryGetValue(kv.Key, out var ov)
+                             && (ov == result.Name || ov == "main" || string.IsNullOrEmpty(ov)))
+                .ToDictionary(kv => kv.Key, kv => kv.Value);
+            EmitOverlayFile(result.Name, result.Functions, className, scoped, config.Debug, result.LbaStart, outDir);
         }
 
         Console.WriteLine("[Recompiler] Emitting Entry.cs");
@@ -352,6 +376,16 @@ public static class OverlayWriter
     {
         try
         {
+            if (cfg.Bin != null)
+            {
+                // Host binary image (e.g. RAM dump of a module the disc stores compressed).
+                // Resolved relative to the config file like every other config path.
+                if (!File.Exists(cfg.Bin)) throw new FileNotFoundException($"overlay '{cfg.Name}': bin not found: {cfg.Bin}");
+                byte[] img = File.ReadAllBytes(cfg.Bin);
+                int start = cfg.Offset + cfg.Skip;
+                int length = cfg.Size ?? (img.Length - start);
+                return (img.AsSpan(start, length).ToArray(), cfg.Lba);
+            }
             if (cfg.Lba >= 0)
             {
                 int sz = cfg.Size ?? throw new InvalidOperationException($"'size' is required when using 'lba' for overlay '{cfg.Name}'");

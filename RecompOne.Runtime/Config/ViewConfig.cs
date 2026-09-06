@@ -43,4 +43,7 @@ public class ViewConfig
         get => GetBool("Fullscreen");
         set => SetBool("Fullscreen", value);
     }
+
+    public int WindowWidth  { get => GetInt("WindowWidth", 1600);  set => SetInt("WindowWidth", value); }
+    public int WindowHeight { get => GetInt("WindowHeight", 900);  set => SetInt("WindowHeight", value); }
 }

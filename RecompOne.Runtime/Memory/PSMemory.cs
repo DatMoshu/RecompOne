@@ -29,19 +29,49 @@ public sealed class PSMemory : IMemory
     // Raise a hardware interrupt source (0=VBLANK,1=GPU,2=CDROM,3=DMA,...);
     // the source is only serviced once the game unmasks it in I_MASK.
     public void RaiseIrq(int bit) { if (HwIrqModel) _iStat |= 1u << bit; }
+    public uint IrqStat => _iStat;
+    public uint IrqMask => _iMask;
 
     public ReadOnlySpan<byte> Ram => _ram;
     internal byte[] RamBuffer => _ram;
 
     public PSMemory()
     {
-        _dma = new Dma(this, _gpu, _spu, _mdec, () => { RaiseIrq(3); Runtime.DispatchIrq(3); });
+        _dma = new Dma(this, _gpu, _spu, _mdec, OnDmaComplete);
         Runtime.Gpu = _gpu;
         Runtime.Spu = _spu;
         Bios.KromFont.InstallInto(_bios);
     }
 
+    // DMA transfers finish synchronously inside the CHCR write, so a DMA-IRQ handler
+    // that kicks the next queued transfer (libgpu's _exeque/_cwc chain) would recurse
+    // Run->Complete->DispatchIrq->handler->Run... until the host stack overflows.
+    // Real hardware only interrupts after the handler returned. Mirror that: a
+    // completion raised while a DMA IRQ is being delivered just latches (DICR flag +
+    // I_STAT bit are already set) and is re-dispatched once the outer delivery unwinds.
+    bool _inDmaIrq, _dmaIrqPending;
+    void OnDmaComplete()
+    {
+        if (_inDmaIrq) { _dmaIrqPending = true; return; }
+        _inDmaIrq = true;
+        try
+        {
+            do { _dmaIrqPending = false; RaiseIrq(3); Runtime.DispatchIrq(3); }
+            while (_dmaIrqPending);
+        }
+        finally { _inDmaIrq = false; }
+    }
+
+    // Controller/memory-card serial port. Off by default: games served by the libpad or
+    // BIOS-pad HLE never touch these registers, and a game with its own driver may already
+    // be handled by a game-specific patch. Opted in per game (BFM drives the port itself).
+    public static bool SioEnabled;
+    readonly SioPad _sio = new(bit => { if (HwIrqModel) Runtime.Mem?.RaiseIrq(bit); });
+
+    public SioPad Sio => _sio;
+
     public void SetCd(CdController cd) { _cd = cd; _dma.SetCd(cd); }
+    public long[] DmaRuns => _dma.Runs;
 
     private static bool IsDmaChcr(uint phys) => phys >= 0x1F801080u && phys < 0x1F8010F0u && (phys & 0xFu) == 8u;
 
@@ -103,6 +133,7 @@ public sealed class PSMemory : IMemory
     {
         uint phys = MemoryMap.ToPhysical(address);
         if (_cd != null && IsCd(phys)) return _cd.Read(phys);
+        if (SioEnabled && SioPad.InRange(phys)) return (byte)_sio.Read(phys, 1);
         return Resolve(address, 1)[0];
     }
 
@@ -110,6 +141,7 @@ public sealed class PSMemory : IMemory
     {
         uint phys = MemoryMap.ToPhysical(address);
         if (_cd != null && IsCd(phys)) return _cd.Read(phys);
+        if (SioEnabled && SioPad.InRange(phys)) return (ushort)_sio.Read(phys, 2);
         if (HwIrqModel && IsIrqStat(phys)) return (ushort)_iStat;
         if (HwIrqModel && IsIrqMask(phys)) return (ushort)_iMask;
         if (IsSpu(phys)) return _spu.ReadReg16(phys);
@@ -128,6 +160,7 @@ public sealed class PSMemory : IMemory
         if (phys == 0x1F8010F4u) return _dma.ReadDicr();
         if (HwIrqModel && IsIrqStat(phys)) return _iStat;
         if (HwIrqModel && IsIrqMask(phys)) return _iMask;
+        if (SioEnabled && SioPad.InRange(phys)) return _sio.Read(phys, 4);
         if (_cd != null && IsCd(phys)) return _cd.Read(phys);
         if (IsSpu(phys)) return (uint)(_spu.ReadReg16(phys) | (_spu.ReadReg16(phys + 2) << 16));
         if (Timers.InRange(phys) && _timers.TryRead(phys, out uint tv)) return tv;
@@ -141,6 +174,7 @@ public sealed class PSMemory : IMemory
         Watch(phys, value, 1);
         TrackWrite(phys, 1);
         if (_cd != null && IsCd(phys)) { _cd.Write(phys, value); return; }
+        if (SioEnabled && SioPad.InRange(phys)) { _sio.Write(phys, value, 1); return; }
         Resolve(address, 1)[0] = value;
     }
 
@@ -150,8 +184,9 @@ public sealed class PSMemory : IMemory
         Watch(phys, value, 2);
         TrackWrite(phys, 2);
         if (_cd != null && IsCd(phys)) { _cd.Write(phys, (byte)value); return; }
+        if (SioEnabled && SioPad.InRange(phys)) { _sio.Write(phys, value, 2); return; }
         if (HwIrqModel && IsIrqStat(phys)) { _iStat &= value; return; } // ack: write clears 0-bits
-        if (HwIrqModel && IsIrqMask(phys)) { _iMask = value; return; }
+        if (HwIrqModel && IsIrqMask(phys)) { _iMask = value; Interrupts.OnMaskChanged(this, Runtime.Cpu); return; }
         if (IsSpu(phys)) { _spu.WriteReg16(phys, value); return; }
         if (_timers.TryWrite(phys, value)) return;
         var s = Resolve(address, 2);
@@ -160,8 +195,14 @@ public sealed class PSMemory : IMemory
     }
 
     public static bool WatchOn;
+    // Generic host watchpoints: physical addresses (word-aligned base) whose writes are
+    // reported to WatchHook(phys, value, size). Empty set = zero cost beyond the count check.
+    public static readonly HashSet<uint> WatchAddrs = [];
+    public static Action<uint, uint, int>? WatchHook;
+
     private void Watch(uint phys, uint value, int size)
     {
+        if (WatchAddrs.Count != 0 && WatchAddrs.Contains(phys & 0x1FFFFFFCu)) WatchHook?.Invoke(phys, value, size);
         if (WatchOn && (phys & 0x1FFFFFFFu) == 0x000B0CD8u && (value & 0x100u) != 0
             && (_ram[0x000B0CD9] & 0x01) == 0) // bit 0x100 newly set
             Console.WriteLine($"[watch] cd8 |= 0x100  val=0x{value:X8} scene=0x{(uint)(_ram[0x0009D280]|(_ram[0x0009D281]<<8)|(_ram[0x0009D282]<<16)|(_ram[0x0009D283]<<24)):X8}\n{new System.Diagnostics.StackTrace(2, false)}");
@@ -194,8 +235,9 @@ public sealed class PSMemory : IMemory
             return;
         }
         if (_cd != null && IsCd(phys)) { _cd.Write(phys, (byte)value); return; }
+        if (SioEnabled && SioPad.InRange(phys)) { _sio.Write(phys, value, 2); return; }
         if (HwIrqModel && IsIrqStat(phys)) { _iStat &= value; return; } // ack: write clears 0-bits
-        if (HwIrqModel && IsIrqMask(phys)) { _iMask = value; return; }
+        if (HwIrqModel && IsIrqMask(phys)) { _iMask = value; Interrupts.OnMaskChanged(this, Runtime.Cpu); return; }
         if (IsSpu(phys)) { _spu.WriteReg16(phys, (ushort)value); _spu.WriteReg16(phys + 2, (ushort)(value >> 16)); return; }
         if (_timers.TryWrite(phys, value)) return;
         var s = Resolve(address, 4);
