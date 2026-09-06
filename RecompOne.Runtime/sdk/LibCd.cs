@@ -211,7 +211,7 @@ public static class LibCd
         if (n <= 0) return;
         _sectorCredit -= n;
 
-        int size = (_mode & ModeSize1) != 0 ? 2340 : 2048;
+        int size = SectorSize(_mode);
         var snap = c.Snapshot();
         for (int i = 0; i < n && _readActive && _cbReady != 0; i++)
         {
@@ -291,12 +291,21 @@ public static class LibCd
         if (ReadyCallbackReads)
         {   // Cursor over the current sector's FIFO: the first call takes the 4-byte
             // header + 8-byte subheader, the next takes the 2048-byte payload.
+            int want = Math.Max(0, words) * 4;
             int avail = Math.Max(0, _fifo.Length - _fifoPos);
-            int n = Math.Min(words * 4, avail);
+            int n = Math.Min(want, avail);
             for (int j = 0; j < n; j++)
                 m.WriteU8(madr + (uint)j, _fifo[_fifoPos + j]);
             _fifoPos += n;
-            c.V0 = 1;
+            // Short read: the latched sector is smaller than the game asked for, so our
+            // mode/size model disagrees with it. The FIFO cannot be refilled from here
+            // (TickReadyReads latches it one frame below this callback, so waiting would
+            // deadlock), and leaving the tail untouched hands the caller its own stale
+            // bytes under a success code. Zero the tail and return the libcd error code.
+            for (int j = n; j < want; j++)
+                m.WriteU8(madr + (uint)j, 0);
+            if (n < want) Log.Sdk($"CdGetSector short: want={want} got={n} mode=0x{_mode:X2} fifo={_fifo.Length}");
+            c.V0 = n == want ? 1u : 0u;
             return;
         }
 
