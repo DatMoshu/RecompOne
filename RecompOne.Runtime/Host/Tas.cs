@@ -33,6 +33,8 @@ public static class Tas
     static readonly System.Text.StringBuilder _rec = new();
     static ushort _lastRecState = 0xFFFF;
     static byte _lastLx = 0x80, _lastLy = 0x80;
+    static long _lastHeartbeatFrame;
+    const long HeartbeatFrames = 300; // ~5s at 60fps
 
     // replay keyframes (frame, state, leftX, leftY), sorted by frame
     static readonly List<(long f, ushort st, byte lx, byte ly)> _play = new();
@@ -44,6 +46,7 @@ public static class Tas
         _rec.Clear();
         _rec.AppendLine("# PE1 TAS input record: <frame> <state hex, active-low> <leftX> <leftY>");
         Recording = true;
+        _lastHeartbeatFrame = Frame;
     }
 
     public static void StartReplay(string path)
@@ -83,10 +86,21 @@ public static class Tas
         if (Recording)
         {
             ushort st = Controller.State;
-            if (st != _lastRecState || Controller.LeftX != _lastLx || Controller.LeftY != _lastLy)
+            bool changed = st != _lastRecState || Controller.LeftX != _lastLx || Controller.LeftY != _lastLy;
+            // Heartbeat: a real per-change write already hits disk synchronously below (no
+            // buffered-until-exit loss to guard against), so this is NOT a crash-safety net —
+            // it exists so a recording process that stops receiving input (e.g. another
+            // process grabbed the pad/keyboard focus first, as happened 2026-09-06 with two
+            // instances launched at once) is diagnosable from the file itself: its mtime and
+            // size stop advancing immediately instead of looking fine until someone tries to
+            // replay an hour of silence. Re-recording the SAME unchanged state is enough to
+            // prove liveness; it does not need to look like real new input.
+            bool heartbeat = !changed && Frame - _lastHeartbeatFrame >= HeartbeatFrames;
+            if (changed || heartbeat)
             {
                 _rec.AppendLine($"{Frame} {st:X4} {Controller.LeftX} {Controller.LeftY}");
                 _lastRecState = st; _lastLx = Controller.LeftX; _lastLy = Controller.LeftY;
+                _lastHeartbeatFrame = Frame;
                 try { System.IO.File.WriteAllText(_recPath, _rec.ToString()); } catch { }
             }
         }
