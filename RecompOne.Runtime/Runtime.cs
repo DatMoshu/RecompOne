@@ -58,6 +58,13 @@ public static class Runtime
     /// poll gate), so skip the frame clock — sleeping in both places halves the frame rate.</param>
     public static void PresentFrame(bool paced = false)
     {
+        // Presentation touches the GL context, which is thread-affine. Under the BIOS
+        // thread model (Bios.BiosB.EnableThreads) emulated code can run on a non-main
+        // thread, so verify rather than assume that frames are still presented from
+        // main -- an assumption like this holds until the port that breaks it, and the
+        // symptom would be inexplicable GL corruption instead of an obvious error.
+        // No-op unless the thread model is on.
+        Bios.BiosB.AssertMainThread(nameof(PresentFrame));
         FrameCount++;
         _fpsFrames++;
         double nowMs = _fpsClock.Elapsed.TotalMilliseconds;

@@ -5,7 +5,7 @@ namespace RecompOne.Runtime.Bios;
 
 public static class BiosC
 {
-    public static void Dispatch(CpuContext c, IMemory m, uint fn)
+    public static void Syscall(CpuContext c, IMemory m, uint fn)
     {
         Log.Bios($"C({fn:X2}) {BiosNames.C(fn)}");
         switch (fn)

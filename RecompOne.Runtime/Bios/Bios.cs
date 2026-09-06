@@ -12,9 +12,9 @@ public static class Bios
     {
         switch (addr)
         {
-            case 0xA0u: BiosA.Dispatch(c, m, c.T1); return true;
-            case 0xB0u: BiosB.Dispatch(c, m, c.T1); return true;
-            case 0xC0u: BiosC.Dispatch(c, m, c.T1); return true;
+            case 0xA0u: BiosA.Syscall(c, m, c.T1); return true;
+            case 0xB0u: BiosB.Syscall(c, m, c.T1); return true;
+            case 0xC0u: BiosC.Syscall(c, m, c.T1); return true;
         }
         if ((addr & 0xFF000000u) == 0xBFC00000u) return true;
         return false;

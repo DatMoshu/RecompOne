@@ -13,6 +13,202 @@ public static class BiosB
     const int MaxThreads = 4;
     static readonly TCB[] _tcbs = new TCB[MaxThreads];
 
+    // ---- BIOS threads (OpenTh / ChangeTh / CloseTh) -------------------------
+    // OFF BY DEFAULT. With ThreadModel false, ChangeTh stays the historical
+    // no-op and OpenTh keeps allocating from slot 0, so every existing port is
+    // byte-identical. Only a game that actually runs code in a BIOS thread needs
+    // this; as of 2026-09-06 that is Dino Crisis alone (PE1, BFM and PE2 emit no
+    // OpenTh/CloseTh/ChangeTh stub at all).
+    //
+    // WHY REAL THREADS: a statically recompiled MIPS function is a C# method on
+    // the real CLR stack, so a thread switch cannot be a jump -- the target's
+    // stack has to exist somewhere. .NET has no fibers, so each BIOS thread gets
+    // its own CLR thread and we hand a single baton between them. Exactly one
+    // thread is ever runnable, which makes these cooperative coroutines rather
+    // than concurrency: no other part of the runtime has to become thread-safe.
+    //
+    // Slot 0 is RESERVED for the original ("main") thread, because that is what
+    // the BIOS does -- TCB[0] is the running thread at boot, so a game's own
+    // OpenTh handles start at 1 and the well-known handle 0xFF000000 means
+    // "switch back to main". Allocating slot 0 to a game thread would alias the
+    // two and the switch would become a self-switch no-op.
+    public static bool ThreadModel { get; private set; }
+
+    /// <summary>Bounded wait for a handoff. A cooperative switch that never comes back
+    /// would otherwise wedge the whole port with no diagnosis, so it fails loudly instead.</summary>
+    public static int ThreadSwitchTimeoutMs = 5000;
+
+    sealed class ThreadSlot
+    {
+        public readonly SemaphoreSlim Gate = new(0, 1);
+        public Thread? Native;
+        public uint Pc, Sp, Gp;
+        public bool Started, Exited;
+    }
+
+    static readonly ThreadSlot[] _slots = CreateSlots();
+    static ThreadSlot[] CreateSlots()
+    {
+        var a = new ThreadSlot[MaxThreads];
+        for (int i = 0; i < MaxThreads; i++) a[i] = new ThreadSlot();
+        return a;
+    }
+
+    const int MainSlot = 0;
+    static int _current = MainSlot;
+    static int _mainManagedId;
+    static volatile bool _shutdown;
+
+    /// <summary>Opt in to real BIOS threads. MUST be called from the thread that will run
+    /// the game's main loop (i.e. from Program.cs before Entry.Run), because that thread is
+    /// recorded as TCB slot 0 and as the only thread allowed to present frames.</summary>
+    public static void EnableThreads()
+    {
+        ThreadModel = true;
+        _mainManagedId = Environment.CurrentManagedThreadId;
+        _tcbs[MainSlot] = new TCB { Used = true };
+        _slots[MainSlot].Started = true;
+        _current = MainSlot;
+    }
+
+    public static bool OnMainThread => Environment.CurrentManagedThreadId == _mainManagedId;
+
+    /// <summary>Diagnostic view of the BIOS thread slots. Read-only; no behaviour change.</summary>
+    public static string DescribeThreads()
+    {
+        if (!ThreadModel) return "threads off";
+        var sb = new System.Text.StringBuilder($"current=slot{_current}");
+        for (int i = 0; i < MaxThreads; i++)
+        {
+            var s = _slots[i];
+            if (!_tcbs[i].Used && !s.Started && s.Pc == 0) continue;
+            sb.Append($" [{i}] pc=0x{s.Pc:X8} used={(_tcbs[i].Used ? 1 : 0)} started={(s.Started ? 1 : 0)} " +
+                      $"exited={(s.Exited ? 1 : 0)} gate={s.Gate.CurrentCount} alive={(s.Native?.IsAlive == true ? 1 : 0)};");
+        }
+        return sb.ToString();
+    }
+
+    /// <summary>Guard for work that is pinned to the main thread -- above all frame
+    /// presentation, since the GL context is thread-affine. Cheap no-op unless the thread
+    /// model is on. Fails immediately and by name rather than corrupting GL state, which
+    /// would surface later as inexplicable rendering garbage.</summary>
+    public static void AssertMainThread(string what)
+    {
+        if (!ThreadModel || OnMainThread) return;
+        throw new InvalidOperationException(
+            $"BIOS-thread violation: '{what}' ran on BIOS thread slot {CurrentSlotOf(Environment.CurrentManagedThreadId)} " +
+            $"(managed id {Environment.CurrentManagedThreadId}), but it is pinned to the main thread " +
+            $"(managed id {_mainManagedId}). The GL context is thread-affine, so this must not be allowed to proceed. " +
+            "Either the game presents frames from a BIOS thread (this runtime cannot do that yet) " +
+            "or a switch left the wrong thread running.");
+    }
+
+    static int CurrentSlotOf(int managedId)
+    {
+        for (int i = 0; i < MaxThreads; i++)
+            if (_slots[i].Native != null && _slots[i].Native!.ManagedThreadId == managedId) return i;
+        return -1;
+    }
+
+    /// <summary>Release every parked thread so a shutting-down process does not wait on them.
+    /// The threads are background threads as well, so this is belt-and-braces.</summary>
+    public static void ShutdownThreads()
+    {
+        if (!ThreadModel) return;
+        _shutdown = true;
+        for (int i = 0; i < MaxThreads; i++)
+            try { _slots[i].Gate.Release(); } catch (SemaphoreFullException) { }
+    }
+
+    static void ChangeTh(CpuContext c, IMemory m, uint handle)
+    {
+        if (!ThreadModel) return;                     // historical no-op
+        int to = (int)(handle & 0xFFu);
+        if ((handle & 0xFF000000u) != 0xFF000000u || to < 0 || to >= MaxThreads)
+            throw new InvalidOperationException($"ChangeTh: bad thread handle 0x{handle:X8}");
+
+        int from = _current;
+        if (to == from) return;                       // switching to self is a no-op
+        var dst = _slots[to];
+        if (!_tcbs[to].Used || dst.Exited)
+            throw new InvalidOperationException(
+                $"ChangeTh: handle 0x{handle:X8} (slot {to}) is {(dst.Exited ? "already exited" : "not open")}; " +
+                $"switch attempted from slot {from}.");
+
+        _current = to;
+        if (!dst.Started) StartThread(m, to);
+        dst.Gate.Release();
+        Park(from, to);
+        c.V0 = 1u;
+    }
+
+    /// <summary>Block the calling BIOS thread until something switches back to it.
+    /// Bounded, so a lost baton is reported instead of hanging the port silently.</summary>
+    static void Park(int slot, int handedTo)
+    {
+        var s = _slots[slot];
+        // A thread parked while the rest of the port keeps running is NORMAL -- a game
+        // task can legitimately sleep for many seconds of frames before its scheduler
+        // switches back. So the bound is on the PORT being stuck, not on this thread
+        // waiting: keep waiting as long as frames are still being presented, and only
+        // fail when nothing at all has progressed for the timeout. (A flat per-wait
+        // timeout killed healthy long sleeps -- it fired on Dino Crisis's module thread
+        // while main was happily rendering at 60 fps.)
+        long lastFrame = Runtime.FrameCount;
+        int stalledMs = 0;
+        while (true)
+        {
+            if (s.Gate.Wait(250)) { if (_shutdown) ExitThread(slot); return; }
+            if (_shutdown) return;
+            long now = Runtime.FrameCount;
+            if (now != lastFrame) { lastFrame = now; stalledMs = 0; continue; }
+            stalledMs += 250;
+            if (stalledMs >= ThreadSwitchTimeoutMs) break;
+        }
+        throw new TimeoutException(
+            $"BIOS thread handoff wedged: no frame presented for {ThreadSwitchTimeoutMs} ms. " +
+            $"Slot {slot} (handle 0xFF0000{slot:X2}, entered at pc 0x{s.Pc:X8}) switched to slot {handedTo} " +
+            $"(handle 0xFF0000{handedTo:X2}, pc 0x{_slots[handedTo].Pc:X8}) and is still waiting to be resumed. " +
+            "The thread that received control never switched back.");
+    }
+
+    static void StartThread(IMemory m, int slot)
+    {
+        var s = _slots[slot];
+        s.Started = true;
+        s.Native = new Thread(() =>
+        {
+            // Park first: the switcher releases this gate immediately after starting us,
+            // so only one thread is ever running emulated code.
+            if (!s.Gate.Wait(ThreadSwitchTimeoutMs) || _shutdown) return;
+            try
+            {
+                var tc = new CpuContext { SP = s.Sp, GP = s.Gp, RA = 0u };
+                Dispatch.Dispatcher.Call(tc, m, s.Pc);
+            }
+            catch (Exception ex) when (!_shutdown)
+            {
+                Console.WriteLine($"[bios] thread slot {slot} (pc 0x{s.Pc:X8}) faulted: {ex}");
+            }
+            ExitThread(slot);
+        })
+        { IsBackground = true, Name = $"psx-bios-th{slot}" };
+        s.Native.Start();
+    }
+
+    /// <summary>A BIOS thread entry point returned (or the process is going down). Retire the
+    /// slot and hand control back to main so the game does not park forever waiting on a
+    /// thread that no longer exists.</summary>
+    static void ExitThread(int slot)
+    {
+        var s = _slots[slot];
+        s.Exited = true;
+        _tcbs[slot] = default;
+        if (_shutdown) return;
+        _current = MainSlot;
+        try { _slots[MainSlot].Gate.Release(); } catch (SemaphoreFullException) { }
+    }
+
     static readonly uint[] _intChain = new uint[4];
 
     public static uint IntrEnvInInterruptAddr = 0u;
@@ -166,7 +362,7 @@ public static class BiosB
     }
 
     public static void RefreshPad(IMemory m) => PadRead(m);
-    public static void Dispatch(CpuContext c, IMemory m, uint fn)
+    public static void Syscall(CpuContext c, IMemory m, uint fn)
     {
         Log.Bios($"B({fn:X2}) {BiosNames.B(fn)}");
         switch (fn)
@@ -187,7 +383,7 @@ public static class BiosB
             case 0x0D: DisableEvent(c.A0); c.V0 = 1u; break;
             case 0x0E: c.V0 = OpenTh(c.A0, c.A1, c.A2); break;
             case 0x0F: CloseTh(c.A0); c.V0 = 1u; break;
-            case 0x10: break;
+            case 0x10: ChangeTh(c, m, c.A0); break;
             case 0x11: break;
             case 0x12: _padBufA = c.A0; _padBufB = c.A2; c.V0 = 1u; break; // InitPad(buf1,siz1,buf2,siz2)
             case 0x13: _padStarted = true; c.V0 = 1u; break;              // StartPad
@@ -211,13 +407,13 @@ public static class BiosB
             case 0x2F: c.V0 = 0u; break;
             case 0x30: c.V0 = 0u; break;
             case 0x31: c.V0 = 0u; break;
-            case 0x32: BiosA.Dispatch(c, m, 0x00); break;
-            case 0x33: BiosA.Dispatch(c, m, 0x01); break;
-            case 0x34: BiosA.Dispatch(c, m, 0x02); break;
-            case 0x35: BiosA.Dispatch(c, m, 0x03); break;
-            case 0x36: BiosA.Dispatch(c, m, 0x04); break;
-            case 0x37: BiosA.Dispatch(c, m, 0x05); break;
-            case 0x38: BiosA.Dispatch(c, m, 0x06); break;
+            case 0x32: BiosA.Syscall(c, m, 0x00); break;
+            case 0x33: BiosA.Syscall(c, m, 0x01); break;
+            case 0x34: BiosA.Syscall(c, m, 0x02); break;
+            case 0x35: BiosA.Syscall(c, m, 0x03); break;
+            case 0x36: BiosA.Syscall(c, m, 0x04); break;
+            case 0x37: BiosA.Syscall(c, m, 0x05); break;
+            case 0x38: BiosA.Syscall(c, m, 0x06); break;
             case 0x39: c.V0 = c.A0 <= 2u ? 2u : 0u; break;
             case 0x3A: c.V0 = 0xFFFFFFFFu; break;
             case 0x3B: Console.Write((char)(c.A0 & 0xFF)); c.V0 = c.A0; break;
@@ -317,14 +513,39 @@ public static class BiosB
     }
     static uint OpenTh(uint pc, uint spFp, uint gp)
     {
-        for (int i = 0; i < MaxThreads; i++)
-            if (!_tcbs[i].Used) { _tcbs[i] = new TCB { Used = true }; return 0xFF000000u | (uint)i; }
+        // Slot 0 belongs to the main thread once the thread model is on (see above),
+        // so game threads start at 1. With the model off this is the historical
+        // behaviour exactly: allocate from 0 and discard pc/sp/gp.
+        int first = ThreadModel ? 1 : 0;
+        for (int i = first; i < MaxThreads; i++)
+        {
+            if (_tcbs[i].Used) continue;
+            _tcbs[i] = new TCB { Used = true };
+            if (ThreadModel)
+            {
+                var s = _slots[i];
+                s.Pc = pc; s.Sp = spFp; s.Gp = gp;
+                s.Started = false; s.Exited = false; s.Native = null;
+                while (s.Gate.CurrentCount > 0) s.Gate.Wait(0);   // reuse a recycled slot cleanly
+                Log.Bios($"OpenTh -> slot {i} pc=0x{pc:X8} sp=0x{spFp:X8} gp=0x{gp:X8}");
+            }
+            return 0xFF000000u | (uint)i;
+        }
         return 0xFFFFFFFFu;
     }
     static void CloseTh(uint handle)
     {
         int i = (int)(handle & 0xFFu);
-        if (i < MaxThreads) _tcbs[i] = default;
+        if (i >= MaxThreads) return;
+        if (ThreadModel && i != MainSlot)
+        {
+            var s = _slots[i];
+            s.Exited = true;
+            // The thread is parked inside Park(); releasing it while _shutdown is false
+            // would resume dead emulated code, so only wake it if it never started.
+            if (!s.Started) s.Native = null;
+        }
+        _tcbs[i] = default;
     }
 
     /// <summary>Heads of the four kernel interrupt-handler chains built by SysEnqIntRP.</summary>
@@ -360,6 +581,16 @@ public static class BiosB
 
     public static void SaveState(BinaryWriter w)
     {
+        // KNOWN INCOMPATIBILITY: a savestate captures ONE CpuContext, but under the
+        // thread model there is a live CLR stack per BIOS thread and a state taken
+        // mid-switch would restore incoherently. Refuse rather than silently produce
+        // a state that fails much later and looks like a savestate bug. Capturing
+        // these properly needs per-thread stack capture, which this runtime cannot do.
+        if (ThreadModel)
+            throw new NotSupportedException(
+                "Savestates are not supported while BIOS threads are enabled (BiosB.EnableThreads). " +
+                "A savestate holds a single CpuContext, but each BIOS thread owns a live CLR call stack " +
+                "that cannot be serialised. See the Dino Crisis config header.");
         foreach (var e in _evCBs) { w.Write(e.Status); w.Write(e.Class); w.Write(e.Spec); w.Write(e.Mode); w.Write(e.Func); }
         foreach (var t in _tcbs) w.Write(t.Used);
         foreach (var ic in _intChain) w.Write(ic);

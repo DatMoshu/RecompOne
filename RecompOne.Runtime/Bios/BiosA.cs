@@ -97,7 +97,7 @@ public static class BiosA
     public static void SetCd(CdController cd) => _cd = cd;
 
     //as in https://problemkaputt.de/psxspx-kernel-bios.htm
-    public static void Dispatch(CpuContext c, IMemory m, uint fn)
+    public static void Syscall(CpuContext c, IMemory m, uint fn)
     {
         Log.Bios($"A({fn:X2}) {BiosNames.A(fn)}");
         switch (fn)
