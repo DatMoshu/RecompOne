@@ -31,6 +31,15 @@ public static class Savestate
 
         c.SaveState(w);
         ((PSMemory)Runtime.Mem!).SaveState(w);
+        // Gpu.SaveState serializes the CPU-side VRAM shadow (Gpu.Vram), but the GL
+        // hardware-accelerated backend renders the live scene into its own VRAM texture
+        // and per-region render targets, and does not keep that CPU shadow in sync as
+        // it draws — only explicit VRAM writes (e.g. CD texture uploads) touch it. Left
+        // alone, a save could capture a shadow that never reflected what was actually on
+        // screen. Force a full readback (which internally writes back any dirty render
+        // targets first) into the shadow immediately before serializing it, mirroring
+        // the forced upload done on the load side below.
+        Hle.GpuHle.Backend?.ReadVram(0, 0, Gpu.VramWidth, Gpu.VramHeight, Runtime.Gpu!.Vram);
         Runtime.Gpu!.SaveState(w);
         Runtime.Spu!.SaveState(w);
 
@@ -58,6 +67,15 @@ public static class Savestate
         c.LoadState(r);
         ((PSMemory)Runtime.Mem!).LoadState(r);
         Runtime.Gpu!.LoadState(r);
+        // The GL backend caches VRAM (and render targets derived from it) in GPU
+        // textures that LoadState above never touches — it only overwrites the CPU-side
+        // shadow (Gpu.Vram). Left alone, the display keeps showing whatever was in
+        // those GL textures before the load until something else writes to VRAM (e.g.
+        // the next room's texture uploads), which is exactly the reported symptom:
+        // wrong art immediately after a load, self-correcting on the next room change.
+        // Force a full re-upload + render-target resync here so the fix applies the
+        // instant a state loads, not on the next incidental VRAM write.
+        Hle.GpuHle.Backend?.WriteVram(0, 0, Gpu.VramWidth, Gpu.VramHeight, Runtime.Gpu!.Vram);
         Runtime.Spu!.LoadState(r);
 
         int n = r.ReadInt32();
