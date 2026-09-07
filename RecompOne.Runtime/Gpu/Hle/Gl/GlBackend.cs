@@ -6,7 +6,10 @@ namespace RecompOne.Runtime.Hle;
 public sealed class GlBackend : IGpuBackend
 {
     [StructLayout(LayoutKind.Sequential)]
-    struct GlVertex { public float X, Y; public uint Color; public int Clut, Texpage; public float U, V; }
+    // Ovr = index into the texture-page override array, or -1 (Mods/TextureOverride). It is a
+    // per-vertex attribute rather than a uniform because a batch spans many primitives and the
+    // page/CLUT already travel per vertex for the same reason.
+    struct GlVertex { public float X, Y; public uint Color; public int Clut, Texpage; public float U, V; public int Ovr; }
 
     const int MaxVerts = 0x40000;
 
@@ -30,6 +33,9 @@ public sealed class GlBackend : IGpuBackend
     int _kBlend, _kSetMask, _kCheckMask;
     int _kTwAndX, _kTwAndY, _kTwOrX, _kTwOrY;
     int _kClipX0, _kClipY0, _kClipX1, _kClipY1;
+    int _kOvr = -1;
+    uint _ovrTex;
+    int _ovrVersion = -1, _ovrLayers;
     int _uTexWindow, _uBlend, _uBlendOpaque, _uSetMask, _uCheckMask, _uPosBias, _uFbInv;
     int _uPresentOrigin, _uPresentSize, _uPresentTexSize, _uPresent24Origin, _uPresent24Size;
 
@@ -61,7 +67,11 @@ public sealed class GlBackend : IGpuBackend
         _gl.UseProgram(_progPrim);
         _gl.Uniform1(_gl.GetUniformLocation(_progPrim, "uVram"), 0);
         _gl.Uniform1(_gl.GetUniformLocation(_progPrim, "uDest"), 1);
+        _gl.Uniform1(_gl.GetUniformLocation(_progPrim, "uOvr"), 2);
         _gl.Uniform1(_gl.GetUniformLocation(_progPrim, "uScale"), GlVram.Scale);
+        // A sampler must be bound to something valid even on the paths that never read it, so the
+        // array exists from the start as a single empty layer and only grows if a mod loads pages.
+        SyncOverrideTexture();
 
         _uPresentOrigin = _gl.GetUniformLocation(_progPresent, "uOrigin");
         _uPresentSize = _gl.GetUniformLocation(_progPresent, "uSize");
@@ -86,6 +96,7 @@ public sealed class GlBackend : IGpuBackend
         _gl.EnableVertexAttribArray(2); _gl.VertexAttribIPointer(2, 1, VertexAttribIType.Int, stride, (void*)12);
         _gl.EnableVertexAttribArray(3); _gl.VertexAttribIPointer(3, 1, VertexAttribIType.Int, stride, (void*)16);
         _gl.EnableVertexAttribArray(4); _gl.VertexAttribPointer(4, 2, VertexAttribPointerType.Float, false, stride, (void*)20);
+        _gl.EnableVertexAttribArray(5); _gl.VertexAttribIPointer(5, 1, VertexAttribIType.Int, stride, (void*)28);
 
         // fullscreen quad for present, real vbo since gl_VertexID without arrays does not draw on mesa for some reason?? or i did it wrong?
         _presentVao = _gl.GenVertexArray();
@@ -262,6 +273,14 @@ public sealed class GlBackend : IGpuBackend
         _kTwAndX = ~(_env.TwMaskX * 8) & 0xFF; _kTwAndY = ~(_env.TwMaskY * 8) & 0xFF;
         _kTwOrX = (_env.TwOffX & _env.TwMaskX) * 8; _kTwOrY = (_env.TwOffY & _env.TwMaskY) * 8;
         _kClipX0 = _env.ClipX0; _kClipY0 = _env.ClipY0; _kClipX1 = _env.ClipX1; _kClipY1 = _env.ClipY1;
+
+        // Which repainted page (if any) this primitive samples. Resolved once per primitive, not
+        // per vertex, and skipped entirely unless a mod has actually loaded something — so a
+        // stock run does one bool test here and nothing else.
+        _kOvr = -1;
+        if (Mods.TextureOverride.Active && f.Textured)
+            _kOvr = Mods.TextureOverride.Slot(f.TPage & 0x1FF, f.Clut & 0x7FFF,
+                Export.TextureBaker.PackTexWindow(_env.TwMaskX, _env.TwMaskY, _env.TwOffX, _env.TwOffY));
     }
 
     // debug: RECOMP_COLORHIST=1 prints a histogram of submitted vertex colors (textured tris) every 300 frames
@@ -287,7 +306,52 @@ public sealed class GlBackend : IGpuBackend
             Clut = f.Clut & 0x7FFF,
             Texpage = f.Textured ? (f.TPage & 0x1FF) : 0x8000,
             U = v.U, V = v.V,
+            Ovr = _kOvr,
         };
+    }
+
+    /// <summary>Upload the mod's repainted texture pages as one 256x256 array texture, but only
+    /// when the mod says they changed. <see cref="Mods.TextureOverride.Version"/> is the entire
+    /// handshake: the file watcher lives on the mod side, the GL side just notices the number
+    /// moved. Always leaves a valid (if empty) array bound to unit 2, because a declared sampler
+    /// that is bound to nothing is undefined behaviour on some drivers even when never read.</summary>
+    unsafe void SyncOverrideTexture()
+    {
+        int v = Mods.TextureOverride.Version;
+        if (v == _ovrVersion && _ovrTex != 0) return;
+        _ovrVersion = v;
+
+        var pages = Mods.TextureOverride.Pages;
+        int layers = Math.Max(1, pages.Count);
+        const int n = Mods.TextureOverride.PageSize;
+
+        if (_ovrTex == 0)
+        {
+            _ovrTex = _gl.GenTexture();
+            _gl.ActiveTexture(TextureUnit.Texture2);
+            _gl.BindTexture(TextureTarget.Texture2DArray, _ovrTex);
+            _gl.TexParameter(TextureTarget.Texture2DArray, TextureParameterName.TextureMinFilter, (int)GLEnum.Nearest);
+            _gl.TexParameter(TextureTarget.Texture2DArray, TextureParameterName.TextureMagFilter, (int)GLEnum.Nearest);
+            _gl.TexParameter(TextureTarget.Texture2DArray, TextureParameterName.TextureWrapS, (int)GLEnum.ClampToEdge);
+            _gl.TexParameter(TextureTarget.Texture2DArray, TextureParameterName.TextureWrapT, (int)GLEnum.ClampToEdge);
+            _ovrLayers = 0;
+        }
+        else
+        {
+            _gl.ActiveTexture(TextureUnit.Texture2);
+            _gl.BindTexture(TextureTarget.Texture2DArray, _ovrTex);
+        }
+
+        // One contiguous upload rather than a TexSubImage3D per layer: this runs on a file save,
+        // not per frame, and a single well-formed call is far easier to be sure of than N.
+        var blob = new byte[(long)layers * n * n * 4];
+        for (int i = 0; i < pages.Count; i++)
+            Array.Copy(pages[i], 0, blob, (long)i * n * n * 4, n * n * 4);
+        _gl.PixelStore(PixelStoreParameter.UnpackAlignment, 4);
+        _gl.TexImage3D<byte>(TextureTarget.Texture2DArray, 0, InternalFormat.Rgba8, (uint)n, (uint)n, (uint)layers, 0,
+            PixelFormat.Rgba, PixelType.UnsignedByte, blob.AsSpan());
+        _ovrLayers = layers;
+        _gl.ActiveTexture(TextureUnit.Texture0);
     }
 
     public void DrawTri(in HleVertex a, in HleVertex b, in HleVertex c, in PrimFlags f)
@@ -427,6 +491,9 @@ public sealed class GlBackend : IGpuBackend
         _gl.BindTexture(TextureTarget.Texture2D, _vram.Texture);
         _gl.ActiveTexture(TextureUnit.Texture1);
         _gl.BindTexture(TextureTarget.Texture2D, destTex);
+        SyncOverrideTexture();   // no-op unless a repainted page was saved since the last batch
+        _gl.ActiveTexture(TextureUnit.Texture2);
+        _gl.BindTexture(TextureTarget.Texture2DArray, _ovrTex);
         _gl.ActiveTexture(TextureUnit.Texture0);
         if (rt != null)
         {
@@ -591,6 +658,7 @@ public sealed class GlBackend : IGpuBackend
         if (_progPresent != 0) _gl.DeleteProgram(_progPresent);
         if (_progPresent24 != 0) _gl.DeleteProgram(_progPresent24);
         if (_presentTex != 0) _gl.DeleteTexture(_presentTex);
+        if (_ovrTex != 0) _gl.DeleteTexture(_ovrTex);
         if (_presentFbo != 0) _gl.DeleteFramebuffer(_presentFbo);
     }
 }

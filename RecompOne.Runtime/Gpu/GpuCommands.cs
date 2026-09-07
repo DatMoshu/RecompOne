@@ -104,7 +104,7 @@ public sealed partial class Gpu
         int dx = (int)(_fifo[2] & 0x3FF), dy = (int)((_fifo[2] >> 16) & 0x1FF);
         int w = (int)(_fifo[3] & 0x3FF); if (w == 0) w = 0x400;
         int h = (int)((_fifo[3] >> 16) & 0x1FF); if (h == 0) h = 0x200;
-        if (HleOn) { HleCopy(sx, sy, dx, dy, w, h); return; }
+        if (HleOn) { HleCopy(sx, sy, dx, dy, w, h); OnVramCopy?.Invoke(dx, dy, w, h); return; }
         for (int row = 0; row < h; row++)
             for (int col = 0; col < w; col++)
             {
@@ -115,6 +115,7 @@ public sealed partial class Gpu
                 if (_setMask) px |= 0x8000;
                 Vram[d] = px;
             }
+        OnVramCopy?.Invoke(dx, dy, w, h);
     }
 
     void BeginImageLoad()
@@ -143,7 +144,14 @@ public sealed partial class Gpu
                 Vram[idx] = stored;
         }
         HleLoadPut(stored);
-        if (++_loadPx >= _loadW * _loadH) { _loadImage = false; HleLoadFlush(); }
+        if (++_loadPx >= _loadW * _loadH)
+        {
+            _loadImage = false;
+            HleLoadFlush();
+            // Transfer complete: the backdrop of a fixed-camera game arrives here, not through
+            // HleTri. See Gpu/GpuVramAccess.cs.
+            OnImageUpload?.Invoke(_loadX, _loadY, _loadW, _loadH);
+        }
     }
 
     void BeginImageRead()

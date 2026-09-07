@@ -308,6 +308,10 @@ internal static unsafe class InputManager
         if (key == Key.F7) Savestate.LoadPending = true;
         if (key == Key.F6) Savestate.SlotPath = "state2.sav";
         if (key == Key.F8) Savestate.SlotPath = "state1.sav";
+        // Tab toggles fast-forward. A toggle rather than a hold, because the thing worth
+        // skipping is usually a 40-second FMV or a boot sequence, and holding a key for
+        // that long while also playing is worse than pressing it twice.
+        if (key == Key.Tab) Tas.UserTurbo = !Tas.UserTurbo;
     }
 
     // --- Controller diagnostics (Host/Window/Panels/Debug/ControllerPanel.cs) ---------

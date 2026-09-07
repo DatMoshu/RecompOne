@@ -50,4 +50,10 @@ public class GameConfig
     public KeyBindings Keys { get; set; } = new();
     public GamepadBindings Pad { get; set; } = new();
     public List<string> ActiveMods { get; set; } = [];
+
+    /// Per-mod adjustable values, keyed "&lt;mod id&gt;.&lt;setting key&gt;" (see
+    /// RecompOne.Runtime.Mods.ModSetting). Written by the Mods panel; a key with no
+    /// matching declaration in this build is kept as-is rather than dropped, so a value
+    /// set for a mod that is temporarily absent survives a round trip.
+    public Dictionary<string, double> ModSettings { get; set; } = [];
 }

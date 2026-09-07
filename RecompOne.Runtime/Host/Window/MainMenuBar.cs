@@ -92,10 +92,16 @@ internal static class MainMenuBar
         {
             Toggle<GameInfoPanel>("Game Info");
             Toggle<SavestatePanel>("Savestates");
+            Toggle<ModsPanel>("Mods");
             ImGui.EndMenu();
         }
 
         ImGui.Separator();
+
+        // Fast-forward while playtesting: skips render/audio/frame-pacing, and drops
+        // LibCdStream's real-CD-speed gate so FMVs run through rather than stalling.
+        if (ImGui.MenuItem("Turbo (fast-forward)", "Tab", Host.Tas.UserTurbo))
+            Host.Tas.UserTurbo = !Host.Tas.UserTurbo;
 
         if (ImGui.MenuItem("Dump All (VRAM + RAM + state)..."))
             Host.DumpAll.Write(Path.Combine("dumps", $"dump_{Runtime.FrameCount:D6}"));

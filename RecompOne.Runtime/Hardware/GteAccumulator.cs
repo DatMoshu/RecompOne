@@ -29,7 +29,9 @@ public static class GteAccumulator
         public readonly Dictionary<(int, int, int), int> VertIndex = new();
         public readonly List<(float x, float y, float z, byte r, byte g, byte b, short u, short v)> Verts = new();
         public readonly HashSet<(int, int, int, ushort, ushort)> SeenTris = new();
-        public readonly Dictionary<(bool tex, ushort tpage, ushort clut), List<uint>> Indices = new();
+        // Same material identity the exporter bakes textures from — texture window and
+        // semi-transparency included, since both change which texels a primitive samples.
+        public readonly Dictionary<Export.GltfWriter.MatKey, List<uint>> Indices = new();
         public int TriCount => Indices.Values.Sum(l => l.Count / 3);
     }
 
@@ -102,7 +104,7 @@ public static class GteAccumulator
         int mid = ia + ib + ic - lo - hi;
         if (!obj.SeenTris.Add((lo, mid, hi, t.TPage, t.Clut))) return; // face already known
 
-        var matKey = (t.Textured, t.TPage, t.Clut);
+        var matKey = new Export.GltfWriter.MatKey(t.Textured, t.TPage, t.Clut, t.TexWin, t.SemiTrans);
         if (!obj.Indices.TryGetValue(matKey, out var list)) obj.Indices[matKey] = list = new List<uint>();
         list.Add((uint)ia); list.Add((uint)ib); list.Add((uint)ic);
     }

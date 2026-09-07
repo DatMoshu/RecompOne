@@ -38,8 +38,18 @@ public sealed partial class Gpu
         // Room/model exporter hook (--export-room): off by default, zero cost. This is the single
         // funnel every triangle passes through regardless of backend, so it's where the GTE's 3D
         // capture (GteCapture.OnRtp) gets correlated with the material/UV data assembled here.
-        if (GteCapture.Enabled) GteCapture.OnTriangle(ha, hb, hc, tex, (ushort)CurTPage(), (ushort)clut);
+        // The texture window and the semi-transparency flag travel with the triangle because the
+        // exporter has to bake the exact texels the GPU would fetch: the window rewrites UVs
+        // before the fetch, and the per-texel STP bit only blends when the primitive is semi.
+        if (GteCapture.Enabled)
+            GteCapture.OnTriangle(ha, hb, hc, tex, (ushort)CurTPage(), (ushort)clut,
+                Export.TextureBaker.PackTexWindow(_texWinMaskX, _texWinMaskY, _texWinOffX, _texWinOffY), semi);
         be.DrawTri(ha, hb, hc, PrimOf(tex, semi, raw, clut));
+        // Post-raster half of the same hook: a screen-space primitive drawn AFTER 3D geometry
+        // has started is late-arriving backdrop, and a listener can only read back what it
+        // painted once it has been painted. No-op unless something is listening.
+        if (GteCapture.Enabled) GteCapture.AfterTriangleDrawn();
+        OnTriangleDrawn?.Invoke();
     }
 
     void HleRect(int x, int y, int w, int h, int u, int v, int clut, int r, int g, int b, bool tex, bool semi, bool raw)
@@ -48,6 +58,9 @@ public sealed partial class Gpu
         be.SetDrawEnv(CurEnv());
         be.DrawRect(new HleRect { X = x, Y = y, W = w, H = h, U = (short)u, V = (short)v, R = (byte)r, G = (byte)g, B = (byte)b },
             PrimOf(tex, semi, raw, clut));
+        // Sprites are the third path a backdrop can reach the framebuffer by, and the one no
+        // GTE-correlating capture can see. See Gpu/GpuVramAccess.cs. Null unless something asked.
+        OnRectDrawn?.Invoke(x, y, w, h, tex, (ushort)CurTPage(), (ushort)clut);
     }
 
     void HleLine(int x0, int y0, int r0, int g0, int b0, int x1, int y1, int r1, int g1, int b1, bool semi)

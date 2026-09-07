@@ -22,6 +22,15 @@ public static class Gte
     static readonly int[] FC = new int[3];
     static int OFX, OFY;
     static ushort H;
+
+    /// <summary>The projection the GTE is currently configured with, read-only, for consumers that
+    /// need to map a captured view-space vertex back to the screen: <c>sx = x*H/z + OFX/65536</c>
+    /// and likewise for y (see the RTP core below). An exporter that omits these produces geometry
+    /// that cannot be reprojected — a fixed-camera game sets them PER CAMERA, so assuming a
+    /// centred 320-unit projection is right for one room and wrong for the next.</summary>
+    public static ushort ProjH => H;
+    public static int ProjOfxFixed => OFX;      // 16.16 fixed point
+    public static int ProjOfyFixed => OFY;      // 16.16 fixed point
     static short DQA;
     static int DQB;
     static short ZSF3, ZSF4;

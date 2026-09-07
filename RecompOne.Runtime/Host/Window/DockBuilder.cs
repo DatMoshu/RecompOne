@@ -33,11 +33,19 @@ internal static unsafe class DockBuilder
     }
 
     // The shipped default: a left column (top/bottom split), the game viewport centered
-    // and largest, and a right column of individually-stacked debug panels (each gets
-    // its own row, not tabbed together, so all of them are visible at once).
+    // and largest, then one or two right-hand columns of individually-stacked debug
+    // panels (each gets its own row, not tabbed together, so all are visible at once).
+    //
+    // farRightColumn is the "what is the game doing" column -- Game Info and Savestates
+    // -- kept separate from the "what is the machine doing" column so that a run shows
+    // both at a glance without anyone arranging windows first. Every panel in the
+    // default layout is also force-opened by the caller; docking a closed window
+    // positions it but leaves it invisible, which reads as the layout not applying.
     public static void SetupColumnsLayout(uint dockId, Vector2 size, string centerWindow,
         (string top, string bottom) leftColumn, string[] rightColumn,
-        float leftRatio = 0.22f, float rightRatio = 0.30f)
+        string[]? farRightColumn = null, string? centerBottom = null,
+        float leftRatio = 0.19f, float rightRatio = 0.22f, float farRightRatio = 0.22f,
+        float centerBottomRatio = 0.26f)
     {
         igDockBuilderRemoveNode(dockId);
         igDockBuilderAddNode(dockId, 0);
@@ -46,25 +54,58 @@ internal static unsafe class DockBuilder
         uint leftId, afterLeft;
         igDockBuilderSplitNode(dockId, (int)ImGuiDir.Left, leftRatio, &leftId, &afterLeft);
 
-        uint rightId, centerId;
-        // rightRatio is of the whole node; renormalize against the remainder after the left split.
-        float rightOfRemainder = rightRatio / (1f - leftRatio);
-        igDockBuilderSplitNode(afterLeft, (int)ImGuiDir.Right, rightOfRemainder, &rightId, &centerId);
+        // Each ratio is of the WHOLE node, so renormalize against what is actually left
+        // after the previous splits -- otherwise the far-right column eats the centre.
+        float remainingFrac = 1f - leftRatio;
+        uint afterFarRight = afterLeft;
+        uint farRightId = 0;
+        if (farRightColumn is { Length: > 0 })
+        {
+            igDockBuilderSplitNode(afterLeft, (int)ImGuiDir.Right,
+                farRightRatio / remainingFrac, &farRightId, &afterFarRight);
+            remainingFrac -= farRightRatio;
+        }
 
-        Dock(centerWindow, centerId);
+        uint rightId, centerId;
+        igDockBuilderSplitNode(afterFarRight, (int)ImGuiDir.Right,
+            rightRatio / remainingFrac, &rightId, &centerId);
+
+        // The log goes UNDER the viewport rather than in a side column: it is the one panel
+        // whose content is wide lines, and a screenshot of a misbehaving run is only useful
+        // if those lines are readable rather than clipped at 20 characters.
+        if (centerBottom is not null)
+        {
+            uint logId, viewportId;
+            igDockBuilderSplitNode(centerId, (int)ImGuiDir.Down, centerBottomRatio, &logId, &viewportId);
+            Dock(centerWindow, viewportId);
+            Dock(centerBottom, logId);
+        }
+        else
+        {
+            Dock(centerWindow, centerId);
+        }
 
         uint leftTop, leftBottom;
         igDockBuilderSplitNode(leftId, (int)ImGuiDir.Up, 0.5f, &leftTop, &leftBottom);
         Dock(leftColumn.top, leftTop);
         Dock(leftColumn.bottom, leftBottom);
 
-        uint remaining = rightId;
-        for (int i = 0; i < rightColumn.Length; i++)
+        StackColumn(rightId, rightColumn);
+        if (farRightColumn is { Length: > 0 }) StackColumn(farRightId, farRightColumn);
+
+        igDockBuilderFinish(dockId);
+    }
+
+    // Give each window its own row in the column rather than tabbing them together.
+    static void StackColumn(uint columnId, string[] windows)
+    {
+        uint remaining = columnId;
+        for (int i = 0; i < windows.Length; i++)
         {
             uint rowId;
-            if (i < rightColumn.Length - 1)
+            if (i < windows.Length - 1)
             {
-                float ratio = 1f / (rightColumn.Length - i);
+                float ratio = 1f / (windows.Length - i);
                 uint below;
                 igDockBuilderSplitNode(remaining, (int)ImGuiDir.Up, ratio, &rowId, &below);
                 remaining = below;
@@ -73,10 +114,8 @@ internal static unsafe class DockBuilder
             {
                 rowId = remaining;
             }
-            Dock(rightColumn[i], rowId);
+            Dock(windows[i], rowId);
         }
-
-        igDockBuilderFinish(dockId);
     }
 
     static void Dock(string windowName, uint nodeId)

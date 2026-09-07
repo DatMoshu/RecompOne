@@ -18,6 +18,11 @@ public sealed class CdController
     private byte _irqFlags;
     private int _seekLba;
     private byte _mode;
+    // CdlSetfilter state. Mode bit 0x08 (CdlModeSF) makes the drive play ONLY the
+    // Form2 audio sectors whose subheader file/channel match these; without it every
+    // audio sector on the track is fed to the SPU. A voice line and its background
+    // music are interleaved on the same track and told apart only by this pair.
+    private byte _filterFile, _filterChannel;
     private byte[] _dataBuf = new byte[2048];
 
     private int _dataFifoPos;
@@ -130,6 +135,16 @@ public sealed class CdController
             case 0x0C: // demute
                 QueueIrq(3, [DriveStatus()]);
                 break;
+            case 0x0D: // Setfilter(file, channel) — which XA-ADPCM stream to listen to
+                // Unimplemented, this answered INT5 (error). libcd's CdControl then returns
+                // 0, and a caller that retries — BFM's streamed-voice command does, once per
+                // frame forever — never advances. That is what made BFM's "shout" dialogue
+                // balloon open and then sit there blank: the balloon's message object parks
+                // in its wait state until the voice command completes, so a CD command the
+                // controller refused presented as a text bug several layers away.
+                if (prms.Count >= 2) { _filterFile = prms[0]; _filterChannel = prms[1]; }
+                QueueIrq(3, [DriveStatus()]);
+                break;
             case 0x0E: // set mode
                 if (prms.Count >= 1) _mode = prms[0];
                 QueueIrq(3, [DriveStatus()]);
@@ -195,6 +210,16 @@ public sealed class CdController
     private void AfterAck()
     {
         if (_pendingIrqs.Count > 0) { DeliverNext(); return; }
+        // DO NOT deliver the next sector from here. It was tried (2026-09-06) and it breaks
+        // the boot: this ack runs inside the game's CD ready callback, so delivering an INT1
+        // re-enters libcd's cb_read while the previous call is still unwinding, and its
+        // `remaining` counter goes NEGATIVE (observed remain=-2). BFM then re-issues
+        // SetLoc/SetMode/ReadN/Pause once per frame at lba 16 forever -- 2397 of each over
+        // 2400 frames -- and never reaches the movie (XA sectors 188 -> 0). This is the same
+        // re-entrancy the deferred-first-INT1 fix in StartRead and the "VSync(-1) must not
+        // present while InDeliver" fix in LibEtc each exist to prevent. The sector release
+        // point has to be OUTSIDE the callback unwind, which is what the per-frame pump in
+        // Runtime.PresentFrame already is.
         if (_reading && _lastIrq == 1) _streamPending = true;
         ClearInInterrupt();
     }
@@ -211,12 +236,35 @@ public sealed class CdController
         return n;
     }
 
+    /// <summary>True when the sector this step consumed was a data sector and an INT1 was
+    /// raised for it. False after an XA audio sector, which the drive swallows silently.</summary>
+    public bool LastStepRaisedIrq { get; private set; }
+
+    /// <summary>Consume ONE sector of budget. Returns true if a sector was consumed at all.
+    ///
+    /// <para>An XA audio sector costs a slot exactly like a data sector, because on real
+    /// hardware the drive reads the disc at a fixed rate and cannot skip past the audio it
+    /// is not playing. This used to drain a whole run of consecutive audio sectors (up to
+    /// 64) inside one step, which is invisible on an interleaved STR — video data breaks the
+    /// run after a few sectors — but catastrophic on a pure-XA stream such as BFM's dialogue
+    /// voice lines, where nothing breaks the run: a 1848-sector voice was consumed in 24
+    /// steps, about 10 frames, so the line started and cut out almost immediately. It also
+    /// meant the 65th sector, still audio, was handed to the data FIFO as if it were
+    /// data.</para></summary>
     public bool AdvanceStreaming()
     {
+        LastStepRaisedIrq = false;
         if (!_reading || !_streamPending) return false;
         if (_irqFlags != 0 || _pendingIrqs.Count > 0) return false;
         _streamPending = false;
-        ReadNextSector();
+        if (!ReadNextSector())
+        {
+            // Audio: consumed, no INT1. Stay armed so the next budget slot keeps the
+            // stream moving rather than waiting for an ack that will never come.
+            _streamPending = true;
+            return true;
+        }
+        LastStepRaisedIrq = true;
         DeliverImmediate(1, [DriveStatus()]);
         return true;
     }
@@ -303,7 +351,10 @@ public sealed class CdController
             _m.WriteU16(BiosB.IntrEnvInInterruptAddr, 0);
     }
 
-    private void ReadNextSector()
+    /// <summary>Consume the sector at <c>_seekLba</c>. Returns false if it was an XA audio
+    /// sector (decoded or filtered out, but never delivered as data), true if it is now in
+    /// the data buffer ready for an INT1.</summary>
+    private bool ReadNextSector()
     {
         try
         {
@@ -314,13 +365,19 @@ public sealed class CdController
             // reset its ring (BFM LOGOB.STR hang / VLC-decoder garbage). Mirror hardware.
             if (PSMemory.HwIrqModel && (_mode & 0x40) != 0)
             {
-                for (int guard = 0; guard < 64; guard++)
+                var sub = _fs.ReadSectorData(_seekLba, 2336); // from the subheader
+                if ((sub[2] & 0x04) != 0)
                 {
-                    var sub = _fs.ReadSectorData(_seekLba, 2336); // from the subheader
-                    if ((sub[2] & 0x04) == 0) break;
-                    XaAudio.DecodeSector(sub, 8, sub[3]);
-                    RecompOne.Runtime.Log.Cd($"xa lba={_seekLba} coding=0x{sub[3]:X2}");
+                    // Mode bit 0x08 (CdlModeSF): only the filtered file/channel is audible.
+                    // The others are still consumed by the drive rather than delivered as
+                    // data — they are audio sectors either way.
+                    bool match = (_mode & 0x08) == 0
+                              || (sub[0] == _filterFile && sub[1] == _filterChannel);
+                    if (match) XaAudio.DecodeSector(sub, 8, sub[3]);
+                    RecompOne.Runtime.Log.Cd($"xa lba={_seekLba} file={sub[0]} chan={sub[1]} "
+                        + $"coding=0x{sub[3]:X2} filt={_filterFile}/{_filterChannel} {(match ? "play" : "skip")}");
                     _seekLba++;
+                    return false;   // one sector of budget spent; no data, so no INT1
                 }
             }
             // Mode bit 0x20 = whole-sector reads: the data FIFO exposes 0x924 bytes
@@ -329,10 +386,12 @@ public sealed class CdController
             _dataBuf = (_mode & 0x20) != 0 ? _fs.ReadSectorData(_seekLba, 2340) : _fs.ReadSector(_seekLba);
             RecompOne.Runtime.Log.Cd($"sector lba={_seekLba} mode=0x{_mode:X2} hdr={Convert.ToHexString(_dataBuf.AsSpan(0, Math.Min(16, _dataBuf.Length)))}");
             _seekLba++;
+            return true;
         }
         catch
         {
             Array.Clear(_dataBuf);
+            return true; // deliver the empty sector rather than stalling the stream
         }
     }
 
@@ -432,7 +491,12 @@ public sealed class CdController
     //
     // Deliberately NOT captured: _fs (the mounted disc is host-owned and outlives a state;
     // restoring it would fight the disc picker), _m, and _dispatching (transient — it is
-    // false at any point safe enough to take a state at all).
+    // false at any point safe enough to take a state at all). Also not captured: the
+    // Setfilter file/channel — the game re-issues Setfilter immediately before every
+    // stream it starts, so the pair is re-established within one command of any restore,
+    // and adding it mid-block would shift the byte layout and silently misparse every
+    // state written by an earlier build (the version floor would have to move, throwing
+    // away states that are otherwise perfectly good).
     public void SaveState(BinaryWriter w)
     {
         w.Write(_shellOpenUntil);

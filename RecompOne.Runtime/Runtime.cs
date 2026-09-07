@@ -33,6 +33,9 @@ public static class Runtime
 
     public static void Initialize(string title)
     {
+        // Before anything else prints, so the Log panel shows the boot sequence too --
+        // overlay loads and CD init are exactly the lines a black-screen report needs.
+        Host.LogTail.Install();
         HostWindow.Initialize(title);
         Audio.Initialize();
         Audio.SetMasterVolume(Config.ConfigManager.Game.Muted ? 0f : Config.ConfigManager.Game.MasterVolume);
@@ -109,7 +112,7 @@ public static class Runtime
         // (libds path, never sets _reading via MMIO) is unaffected.
         if (Memory.PSMemory.HwIrqModel && Cd != null)
             for (int i = 0, n = Cd.SectorsThisFrame(); i < n && Cd.AdvanceStreaming(); i++)
-                DispatchIrq(2); // CDROM slot; AdvanceStreaming raised INT1
+                if (Cd.LastStepRaisedIrq) DispatchIrq(2); // CDROM slot; an XA audio sector raises none
     }
 
     public static void DispatchIrq(int irq)

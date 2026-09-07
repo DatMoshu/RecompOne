@@ -132,6 +132,62 @@ internal static class HostWindow
     static string _baseTitle = "";
     static readonly System.Diagnostics.Stopwatch _titleClock = System.Diagnostics.Stopwatch.StartNew();
     static double _titleNextMs;
+    static string? _runLabel;
+
+    // Flags that mean the run is DRIVING ITSELF. Used to fail safe: an automated run whose
+    // author forgot --run-label must never claim to be the human's window.
+    static readonly string[] AutomationFlags =
+    [
+        "--replay", "--automap", "--newgame", "--exit-at", "--padtest", "--btnsweep",
+        "--autostart", "--autocross", "--savetest", "--snap", "--driveto", "--selftest",
+        "--export-room", "--export-bg", "--export-accum", "--probe", "--warp",
+    ];
+
+    /// <summary>
+    /// Says in the title bar whether this window belongs to the human or to an agent:
+    /// "Agent Run: &lt;goal&gt;" from <c>--run-label=&lt;text&gt;</c>, or "HUMAN PLAY TEST".
+    ///
+    /// Read straight from the process command line rather than plumbed through each port's
+    /// Program.cs, so every game -- including any added later -- gets it with no wiring and
+    /// no chance of one port silently lacking it.
+    ///
+    /// Why it matters: several ports and several automated runs are often open at once, and
+    /// a screenshot of one is otherwise indistinguishable from a screenshot of another. This
+    /// session has already wasted time on exactly that -- a screenshot of an automated replay
+    /// was read as the user's own session, and a report of "no gamepad" was really two
+    /// instances fighting over one pad.
+    ///
+    /// FAILS SAFE: with no label but any self-driving flag present, it says "Agent Run
+    /// (unlabelled)". Wrongly telling the user to keep off a window is a small cost;
+    /// wrongly inviting them into an automated run corrupts the run and confuses both of us.
+    /// </summary>
+    static string RunLabel()
+    {
+        if (_runLabel != null) return _runLabel;
+        _runLabel = "HUMAN PLAY TEST";
+        try
+        {
+            var args = Environment.GetCommandLineArgs();
+            // Explicit human launch wins over the heuristic below: the admin launcher's
+            // Snaps button passes --snap-window, which the flag scan would otherwise read
+            // as automation and mislabel a window the user opened themselves.
+            foreach (var a in args)
+                if (a == "--human") return _runLabel;
+            foreach (var a in args)
+                if (a.StartsWith("--run-label=", StringComparison.Ordinal))
+                {
+                    var text = a["--run-label=".Length..].Trim().Trim('"');
+                    if (text.Length > 0) { _runLabel = "Agent Run: " + text; return _runLabel; }
+                }
+            foreach (var a in args)
+                foreach (var f in AutomationFlags)
+                    if (a.StartsWith(f, StringComparison.Ordinal))
+                    { _runLabel = "Agent Run (unlabelled)"; return _runLabel; }
+        }
+        catch { /* title decoration must never be the thing that stops a port booting */ }
+        return _runLabel;
+    }
+
     static void UpdateTitleFps()
     {
         if (_window == null) return;
@@ -139,7 +195,10 @@ internal static class HostWindow
         if (now < _titleNextMs) return;
         _titleNextMs = now + 500.0;
         if (_baseTitle.Length == 0) _baseTitle = _window.Title;
-        _window.Title = $"{_baseTitle}  -  {Runtime.Fps:F1} fps";
+        // Turbo goes in the title so it is visible in a screenshot -- a fast-forwarding
+        // run otherwise just looks like a port behaving strangely.
+        var turbo = Tas.TurboActive ? "  -  TURBO" : "";
+        _window.Title = $"{_baseTitle}  -  {RunLabel()}  -  {Runtime.Fps:F1} fps{turbo}";
     }
 
     public static void Shutdown()
@@ -206,6 +265,8 @@ internal static class HostWindow
         PanelManager.Register(new ControllerPanel());
         PanelManager.Register(new GameInfoPanel());
         PanelManager.Register(new SavestatePanel());
+        PanelManager.Register(new ModsPanel());
+        PanelManager.Register(new LogPanel());
         PanelManager.Register(new SettingsPopup());
         PanelManager.Register(new AboutPopup());
 
@@ -231,11 +292,32 @@ internal static class HostWindow
         unsafe { io.NativePtr->IniFilename = null; }
 
         // No saved layout to restore (first run) -> build the shipped default next
-        // frame (see DrawDockspace / DockBuilder.SetupColumnsLayout). A saved layout
-        // is never touched.
-        if (!Config.ConfigManager.ApplyImGuiLayout())
+        // frame (see DrawDockspace / DockBuilder.SetupColumnsLayout).
+        //
+        // A saved layout is otherwise honoured -- EXCEPT when it predates the current
+        // default. A saved interface.ini has dock nodes only for the panels that existed
+        // when it was written, so adding a panel leaves the new one floating loose and
+        // can leave the rest mis-sized: the user sees a broken window and has to know to
+        // run Reset Layout. That happened the first time the Mods panel shipped.
+        // Bumping LayoutVersion below rebuilds the default once, automatically.
+        bool stale = Config.ConfigManager.View.GetInt("LayoutVersion", 0) != LayoutVersion;
+        if (!Config.ConfigManager.ApplyImGuiLayout() || stale)
+        {
+            if (stale)
+                Console.WriteLine($"[host] default layout changed (v{Config.ConfigManager.View.GetInt("LayoutVersion", 0)}"
+                                  + $" -> v{LayoutVersion}); rebuilding it once.");
             _layoutPending = true;
+        }
     }
+
+    /// <summary>
+    /// Bump whenever the SHIPPED DEFAULT layout changes -- a panel added to or removed from
+    /// <see cref="ApplyDefaultLayout"/>, or the columns rearranged. Saved layouts from an
+    /// older version are rebuilt once instead of being restored with the new panel missing.
+    /// v2: added the Log panel under the viewport and a far-right column (Game Info,
+    ///     Savestates, Mods).
+    /// </summary>
+    public const int LayoutVersion = 2;
 
     static void OnRender(double dt)
     {
@@ -346,14 +428,28 @@ internal static class HostWindow
         ImGui.End();
     }
 
-    // The shipped default: CPU State + Controller stacked in a left column, the
-    // game viewport centered (largest area, letterboxed by OutputPanel itself), and
-    // RAM Map / VRAM Viewer / Overlay Events / DMA Viewer stacked in a right column
-    // -- each its own row so all four are visible at once, not tabbed together.
-    static void ApplyDefaultLayout(uint dockId, Vector2 size) =>
+    // The shipped default, identical for every game and every launch: CPU State +
+    // Controller in a left column; the viewport centered with the Log beneath it; the
+    // machine-state panels (RAM Map / VRAM Viewer / Overlay Events / DMA Viewer) in one
+    // right column; and the game-state panels (Game Info / Savestates / Mods) in a second.
+    // Each panel gets its own row rather than being tabbed, so a single screenshot of a
+    // run carries everything needed to diagnose it.
+    static readonly string[] DefaultRight = ["RAM Map", "VRAM Viewer", "Overlay Events", "DMA Viewer"];
+    static readonly string[] DefaultFarRight = ["Game Info", "Savestates", "Mods"];
+
+    static void ApplyDefaultLayout(uint dockId, Vector2 size)
+    {
+        // Docking a CLOSED window positions it but never draws it, which looks exactly
+        // like the layout failing to apply. So open everything the layout places.
+        foreach (var p in PanelManager.Panels)
+            if (p.Name is "Output" or "CPU State" or "Controller" or "Log"
+                or "RAM Map" or "VRAM Viewer" or "Overlay Events" or "DMA Viewer"
+                or "Game Info" or "Savestates" or "Mods")
+                p.IsOpen = true;
+
         DockBuilder.SetupColumnsLayout(dockId, size, "Output",
-            ("CPU State", "Controller"),
-            ["RAM Map", "VRAM Viewer", "Overlay Events", "DMA Viewer"]);
+            ("CPU State", "Controller"), DefaultRight, DefaultFarRight, centerBottom: "Log");
+    }
 
     // Rebuilds the shipped default layout next frame. Only invoked explicitly (menu
     // bar "Reset Layout"), never on a normal boot with a saved interface.ini.

@@ -23,7 +23,14 @@ public static class Savestate
     // any of it -- so refusing them would invalidate every existing state for no benefit.
     // MinVersion is the real compatibility floor; bump it only when an older file would
     // actually restore WRONG rather than merely restore less.
-    const int Version = 2;
+    // v3 added a LEADING build stamp (engine assembly + game host assembly; see
+    // Play.BuildStamp) immediately after the version word. Leading rather than trailing
+    // because the whole point is to read it WITHOUT deserializing the state -- a UI, and
+    // --loadstate's refusal path, must be able to say "this came from a different build"
+    // from the first few bytes of the file. v1/v2 files simply have no stamp, which
+    // Play.BuildStamp.Classify reports as Unknown (an absence of evidence, not a
+    // mismatch) rather than refusing every state that predates stamping.
+    const int Version = 3;
     const int MinVersion = 1;
 
     // Host sets these on a keypress; the host is responsible for calling
@@ -53,6 +60,7 @@ public static class Savestate
         using var w = new BinaryWriter(ms);
         w.Write(Magic);
         w.Write(Version);
+        w.Write(Play.BuildStamp.Current);
 
         c.SaveState(w);
         ((PSMemory)Runtime.Mem!).SaveState(w);
@@ -105,6 +113,10 @@ public static class Savestate
         int ver = r.ReadInt32();
         if (ver < MinVersion || ver > Version)
             throw new InvalidDataException($"savestate: version mismatch (got {ver}, this build reads {MinVersion}..{Version})");
+        // Read past the v3 build stamp. Whether a mismatch is fatal is NOT decided here:
+        // Restore's job is to deserialize, and the accept/refuse/force policy lives in
+        // Play.StateLoad where the user's --loadstate-force can reach it.
+        if (ver >= 3) r.ReadString();
 
         c.LoadState(r);
         ((PSMemory)Runtime.Mem!).LoadState(r);
@@ -171,6 +183,29 @@ public static class Savestate
         catch { return false; }
     }
 
+    // "Can this build deserialize the file at all", NOT "was it written by this build".
+    // Those were the same question while the format version was the only provenance signal;
+    // now that a real build stamp exists (v3, see Play.BuildStamp) they are different
+    // questions, and conflating them would mark every still-perfectly-readable v1/v2 state
+    // unloadable the day stamping shipped. Build provenance is Play.StateLoad.Classify.
     public static bool IsCurrentVersion(string path) =>
-        TryReadHeader(path, out var isState, out var v) && isState && v == Version;
+        TryReadHeader(path, out var isState, out var v) && isState && v >= MinVersion && v <= Version;
+
+    // Build stamp without deserializing the state (null for a v1/v2 file, which has none).
+    // Must stay cheap: a UI calls this once per listed file per frame.
+    public static bool TryReadStamp(string path, out string? stamp)
+    {
+        stamp = null;
+        try
+        {
+            using var fs = File.OpenRead(path);
+            using var r = new BinaryReader(fs);
+            if (r.ReadUInt32() != Magic) return false;
+            int ver = r.ReadInt32();
+            if (ver < 3) return true; // ours, simply unstamped
+            stamp = r.ReadString();
+            return true;
+        }
+        catch { return false; }
+    }
 }

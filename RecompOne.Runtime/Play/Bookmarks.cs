@@ -1,5 +1,4 @@
 using System.IO;
-using System.Reflection;
 using RecompOne.Runtime.Context;
 
 namespace RecompOne.Runtime.Play;
@@ -20,17 +19,22 @@ public static class Bookmarks
 {
     const string Magic = "R1BM";
 
-    static string ComputeStamp()
-    {
-        long engine = SafeStamp(typeof(Bookmarks).Assembly);
-        long game = SafeStamp(Assembly.GetEntryAssembly());
-        return $"{engine:X16}-{game:X16}";
-    }
+    // The stamp itself now lives in BuildStamp, shared with plain savestates and the UI, so
+    // there is exactly one definition of "which build produced this" across all formats.
+    static string ComputeStamp() => BuildStamp.Current;
 
-    static long SafeStamp(Assembly? asm)
+    /// <summary>Peek a bookmark's stamp without restoring it (null if unreadable), so a UI
+    /// or --loadstate can classify provenance before deciding to load.</summary>
+    public static string? ReadStamp(string path)
     {
-        try { return asm != null && !string.IsNullOrEmpty(asm.Location) ? File.GetLastWriteTimeUtc(asm.Location).Ticks : 0; }
-        catch { return 0; }
+        try
+        {
+            using var fs = File.OpenRead(path);
+            using var r = new BinaryReader(fs);
+            if (r.ReadString() != Magic) return null;
+            return r.ReadString();
+        }
+        catch { return null; }
     }
 
     public static void Save(string path, CpuContext c, string milestone)
@@ -67,9 +71,9 @@ public static class Bookmarks
     // Loads either format, so a single call site (e.g. --loadstate) doesn't need to
     // know in advance which kind of file it was handed. `milestone` is "" for a plain
     // Savestate file (it doesn't carry one).
-    public static bool TryLoadAny(string path, CpuContext c, out string milestone)
+    public static bool TryLoadAny(string path, CpuContext c, out string milestone, bool ignoreStamp = false)
     {
-        if (IsBookmarkFile(path)) return TryLoad(path, c, out milestone);
+        if (IsBookmarkFile(path)) return TryLoad(path, c, out milestone, ignoreStamp);
         milestone = "";
         try { Savestate.LoadFromFile(path, c); return true; }
         catch (Exception ex) { Console.WriteLine($"[bookmark] {path}: plain-savestate load failed ({ex.Message})"); return false; }
@@ -78,7 +82,11 @@ public static class Bookmarks
     // Returns false (and never touches the running machine state) on any mismatch —
     // missing file, bad magic, or a stamp from a different build. `milestone` is the
     // name the bookmark was saved under, for the caller to resume a script at.
-    public static bool TryLoad(string path, CpuContext c, out string milestone)
+    // `ignoreStamp` is the caller having ALREADY made the accept/refuse decision itself
+    // (Play.StateLoad does, with --loadstate-force and a message naming which half of the
+    // stamp moved). Without it, a forced --loadstate would be refused a second time here,
+    // by a check with less information than the one that already let it through.
+    public static bool TryLoad(string path, CpuContext c, out string milestone, bool ignoreStamp = false)
     {
         milestone = "";
         if (!File.Exists(path)) return false;
@@ -89,9 +97,10 @@ public static class Bookmarks
             if (r.ReadString() != Magic) { Console.WriteLine($"[bookmark] {path}: not a bookmark file, ignoring"); return false; }
             string stamp = r.ReadString();
             string want = ComputeStamp();
-            if (stamp != want)
+            if (stamp != want && !ignoreStamp)
             {
-                Console.WriteLine($"[bookmark] {path}: stale (saved by build {stamp}, running build {want}) — falling back to driving from boot");
+                Console.WriteLine($"[bookmark] {path}: stale — {BuildStamp.Explain(BuildStamp.Classify(stamp))} " +
+                                  $"(saved by build {stamp}, running build {want}) — falling back to driving from boot");
                 return false;
             }
             string name = r.ReadString();

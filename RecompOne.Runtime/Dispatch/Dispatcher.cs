@@ -17,9 +17,44 @@ public static class Dispatcher
         if (overlay.LbaStart >= 0) _lbaToName[overlay.LbaStart] = name;
     }
 
+    /// <summary>
+    /// LBAs that are KNOWN to carry a code module for a shared slot but are not mapped in
+    /// this build: lba -> the slot's base address. Registering them turns the worst failure
+    /// mode a slot-based port has into a loud one.
+    ///
+    /// When a game loads a module into a slot another module already occupies, and the
+    /// incoming one has no overlay, nothing errors: the previous occupant simply stays bound
+    /// and answers calls that now have the NEW module's data sitting behind them. Its
+    /// baked-in table addresses then index real memory holding the wrong contents. On Brave
+    /// Fencer Musashi one unmapped scene LBA produced, at different times, a black screen, a
+    /// bogus-pointer crash, and "every direction walks forward" -- three unrelated-looking
+    /// bugs from one silent misbinding, each chased separately.
+    ///
+    /// Evicting the slot instead makes the very next call into it an "unmapped call: 0xADDR"
+    /// naming the address and the load that covers it, which is the self-documenting crash
+    /// the overlay workflow is built around.
+    /// </summary>
+    public static readonly Dictionary<int, uint> KnownSlotLbas = [];
+
+    static readonly HashSet<int> _reportedUnmappedLba = [];
+
     public static void LoadByLba(int lba)
     {
-        if (_lbaToName.TryGetValue(lba, out var name)) Load(name);
+        if (_lbaToName.TryGetValue(lba, out var name)) { Load(name); return; }
+        if (!KnownSlotLbas.TryGetValue(lba, out uint slotBase)) return;
+
+        foreach (var other in _active.Where(n => n != "main").ToList())
+        {
+            var f = _registry[other].Functions;
+            if (f.Count == 0 || f.Keys.Min() > slotBase || f.Keys.Max() < slotBase) continue;
+            _active.Remove(other);
+            Runtime.OverlayLog.Record(other, OverlayEventKind.Unloaded);
+            Console.WriteLine($"[Dispatcher] evicted {other}: slot 0x{slotBase:X8} taken by UNMAPPED lba {lba}");
+            Rebuild();
+        }
+        if (_reportedUnmappedLba.Add(lba))
+            Console.WriteLine($"[Dispatcher] lba {lba} loads a module at 0x{slotBase:X8} that this build does not map."
+                              + " Add it to the overlay set and rebuild; until then calls into that slot will fault.");
     }
 
     public static readonly HashSet<string> SkipOverlays = new(StringComparer.OrdinalIgnoreCase);

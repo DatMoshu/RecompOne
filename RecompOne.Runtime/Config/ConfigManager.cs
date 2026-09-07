@@ -10,9 +10,12 @@ static file class PanelDefaults
 {
     // Debug panels default to open (and docked, see DockBuilder.SetupDefaultLayout)
     // so a screenshot of a freshly-launched window shows live diagnostic data.
+    // Must stay in step with HostWindow.ApplyDefaultLayout: a panel the layout docks but
+    // this set omits gets positioned and never drawn, which reads as the layout failing.
     static readonly HashSet<string> _openByDefault =
     [
         "Output", "CPU State", "Controller", "VRAM Viewer", "RAM Map", "DMA Viewer", "Overlay Events",
+        "Game Info", "Savestates", "Mods", "Log",
     ];
 
     public static bool IsOpenByDefault(IPanel p) => _openByDefault.Contains(p.Name);
@@ -34,8 +37,16 @@ internal static class ConfigManager
 
     static string? _pendingImGuiIni;
 
+    /// True once Load() has actually read settings.json. Anything that makes a decision
+    /// from a config value BEFORE this is true is reading defaults, not the user's file --
+    /// which matters because a game's host project runs its whole argument parse before
+    /// Runtime.Run calls Load(). See Mods.ModRegistry, which refuses to cache its answer
+    /// while this is false.
+    public static bool Loaded { get; private set; }
+
     public static void Load()
     {
+        Loaded = true;
         if (File.Exists(GameConfigPath))
         {
             try { Game = JsonSerializer.Deserialize<GameConfig>(File.ReadAllText(GameConfigPath), _opts) ?? new(); }
@@ -77,6 +88,11 @@ internal static class ConfigManager
     {
         foreach (var p in panels)
             View.Panels[p.Name] = new PanelState { Open = p.IsOpen };
+
+        // Stamp which default layout this file was written against. HostWindow rebuilds
+        // the default once when the shipped layout moves on, so a new panel never arrives
+        // floating loose over someone's saved arrangement.
+        View.Values["LayoutVersion"] = Host.HostWindow.LayoutVersion.ToString();
 
         var imguiIni = ImGui.SaveIniSettingsToMemory();
         var sb = new StringBuilder();

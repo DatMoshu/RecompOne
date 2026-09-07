@@ -63,12 +63,14 @@ internal static class GlShaders
         layout(location = 2) in int   inClut;
         layout(location = 3) in int   inTexpage;
         layout(location = 4) in vec2  inUV;
+        layout(location = 5) in int   inOvr;
 
         out vec4 vColor;
         out vec2 vUV;
         flat out ivec2 clutBase;
         flat out ivec2 pageBase;
         flat out int   texMode;
+        flat out int   ovrSlot;
 
         uniform vec2 uVertexOffset;
         uniform vec2 uPosBias;
@@ -79,6 +81,8 @@ internal static class GlShaders
             gl_Position = vec4(p, 0.0, 1.0);
 
             vColor = vec4(float(inColor & 0xFFu), float((inColor >> 8) & 0xFFu), float((inColor >> 16) & 0xFFu), 0.0) / 255.0;
+
+            ovrSlot = inOvr;   // -1 in every stock run; see Mods/TextureOverride
 
             if ((inTexpage & 0x8000) != 0) {
                 texMode = 4;
@@ -98,12 +102,14 @@ internal static class GlShaders
         flat in ivec2 clutBase;
         flat in ivec2 pageBase;
         flat in int   texMode;
+        flat in int   ovrSlot;
 
         layout(location = 0, index = 0) out vec4 FragColor;
         layout(location = 0, index = 1) out vec4 BlendColor;
 
         uniform sampler2D uVram;
         uniform sampler2D uDest;
+        uniform sampler2DArray uOvr;
         uniform ivec4 uTexWindow;
         uniform vec4  uBlend;
         uniform vec4  uBlendOpaque = vec4(1.0, 1.0, 1.0, 0.0);
@@ -147,6 +153,19 @@ internal static class GlShaders
             }
 
             if (texel.rgb == vec3(0.0) && texel.a < 0.5) discard;
+
+            // Repainted texture page (Mods/TextureOverride). AFTER the hole discard on purpose:
+            // an override changes a model's COLOURS, never its silhouette, so a texel the game
+            // stores as 0x0000 stays a hole no matter what the PNG says there. The override's own
+            // alpha is the "keep the original" mask (< 0.5 = leave this texel alone), and the
+            // game's alpha -- the per-texel STP bit -- is always kept, so blending is unchanged.
+            // Indexed with the RAW uv, before the texture window, which is exactly how
+            // Export/TextureBaker bakes the page the artist painted over.
+            if (ovrSlot >= 0) {
+                vec4 o = texelFetch(uOvr, ivec3(rawU & 0xff, rawV & 0xff, ovrSlot), 0);
+                if (o.a >= 0.5) texel.rgb = o.rgb;
+            }
+
             FragColor = vec4(modulate(texel, vColor).rgb, max(texel.a, uSetMask));
             BlendColor = texel.a >= 0.5 ? uBlend : uBlendOpaque;
         }

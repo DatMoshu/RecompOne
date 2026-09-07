@@ -100,17 +100,29 @@ public sealed class SavestatePanel : IPanel
             if (!isPlainState && !isBookmark) continue;
 
             var file = Path.GetFileName(path);
-            // Bookmarks carry their own build-stamp check inside Bookmarks.TryLoad/TryLoadAny
-            // (mismatch => safe, logged decline, machine untouched) -- there's no cheap
-            // external peek for that without touching Play/Bookmarks.cs, so a bookmark's
-            // own load call is what determines staleness, not this list.
-            bool current = !isPlainState || Savestate.IsCurrentVersion(path);
+            // Staleness is now a BUILD-STAMP question, read straight off the file for either
+            // format (StateLoad.Classify), not a format-version one. Two reasons that
+            // matters here: a v1/v2 state is perfectly readable and should not be shown as
+            // stale, and -- more usefully -- a real mismatch can now say WHICH half moved.
+            // A game-only rebuild moves no PS1-side address and is the routine case worth
+            // overriding; an engine rebuild can change what captured HLE state means.
+            var match = StateLoad.Classify(path);
+            bool current = match is StampMatch.Same or StampMatch.Unknown;
             string kindTag = isBookmark ? " (bookmark)" : "";
             string label = (labels?.GetValueOrDefault(file) ?? Path.GetFileNameWithoutExtension(file)) + kindTag;
 
             ImGui.PushID(path);
             ImGui.TextUnformatted(label);
-            if (!current) { ImGui.SameLine(); ImGui.TextColored(new Vector4(1f, 0.4f, 0.4f, 1f), "STALE"); }
+            if (!current)
+            {
+                ImGui.SameLine();
+                // Colour carries the risk ranking: a game-only rebuild is amber (usually
+                // fine, override freely), anything touching the engine is red.
+                var tint = match == StampMatch.GameOnly
+                    ? new Vector4(1f, 0.75f, 0.25f, 1f)
+                    : new Vector4(1f, 0.4f, 0.4f, 1f);
+                ImGui.TextColored(tint, match == StampMatch.GameOnly ? "GAME REBUILT" : "ENGINE REBUILT");
+            }
             ImGui.SameLine();
 
             bool canLoad = current && safe;
@@ -122,7 +134,8 @@ public sealed class SavestatePanel : IPanel
             }
             if (!canLoad) ImGui.EndDisabled();
             if (!current && ImGui.IsItemHovered())
-                ImGui.SetTooltip("Saved by a different build (version stamp mismatch) -- refusing to load.");
+                ImGui.SetTooltip($"Refusing to load: {BuildStamp.Explain(match)}.\n\n" +
+                                 "Use Force Load below to override anyway.");
             else if (!safe && ImGui.IsItemHovered())
                 ImGui.SetTooltip("Not at a safe frame to apply a load right now.");
 
@@ -135,6 +148,11 @@ public sealed class SavestatePanel : IPanel
             ImGui.PushStyleColor(ImGuiCol.ButtonHovered, new Vector4(0.75f, 0.15f, 0.15f, 1f));
             if (ImGui.SmallButton("Force Load (unsafe)"))
             {
+                // Force Load means force EVERYTHING: the safety gate (ForceLoadPending) and
+                // the build-stamp refusal. Anyone who ticked the arming checkbox above has
+                // already read what this does; being refused by a second, quieter gate after
+                // that would just look broken.
+                StateLoad.Force = true;
                 Savestate.SlotPath = path;
                 Savestate.ForceLoadPending = true;
             }
@@ -170,13 +188,26 @@ public sealed class SavestatePanel : IPanel
         ImGui.TextDisabled($"Captured every {AutoState.IntervalFrames / 60.0:0.#}s into {AutoState.Dir}/.");
         ImGui.TextDisabled($"Oldest are deleted automatically; only the newest {AutoState.Keep} are kept.");
 
+        // This is the list the crash/fix/resume loop actually uses, so it is also where the
+        // build-stamp override has to be reachable: after a fix-and-rebuild EVERY auto-state
+        // here mismatches by construction (the fix is what invalidated them), and almost
+        // always by the harmless half -- the game assembly. Say which half, and give a way
+        // through, rather than greying the whole list out with the word "stale".
         foreach (var f in files)
         {
-            bool current = !Savestate.TryReadHeader(f.FullName, out var isState, out _) || !isState
-                           || Savestate.IsCurrentVersion(f.FullName);
+            var match = StateLoad.Classify(f.FullName);
+            bool current = match is StampMatch.Same or StampMatch.Unknown;
             ImGui.PushID(f.FullName);
             ImGui.TextUnformatted($"{f.Name}   {f.LastWriteTime:HH:mm:ss}");
-            if (!current) { ImGui.SameLine(); ImGui.TextColored(new Vector4(1f, 0.4f, 0.4f, 1f), "STALE"); }
+            if (!current)
+            {
+                ImGui.SameLine();
+                var tint = match == StampMatch.GameOnly
+                    ? new Vector4(1f, 0.75f, 0.25f, 1f)
+                    : new Vector4(1f, 0.4f, 0.4f, 1f);
+                ImGui.TextColored(tint, match == StampMatch.GameOnly ? "GAME REBUILT" : "ENGINE REBUILT");
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip(BuildStamp.Explain(match));
+            }
             ImGui.SameLine();
             bool canLoad = current && safe;
             if (!canLoad) ImGui.BeginDisabled();
@@ -186,6 +217,24 @@ public sealed class SavestatePanel : IPanel
                 Savestate.LoadPending = true;
             }
             if (!canLoad) ImGui.EndDisabled();
+            // "Load anyway" waits for the SAFE FRAME like a normal load (it sets LoadPending,
+            // not ForceLoadPending) and overrides only the build-stamp refusal. Those are two
+            // independent gates and conflating them is how a load lands mid-cutscene.
+            if (!current)
+            {
+                ImGui.SameLine();
+                if (!safe) ImGui.BeginDisabled();
+                if (ImGui.SmallButton("Load anyway"))
+                {
+                    StateLoad.Force = true;
+                    Savestate.SlotPath = f.FullName;
+                    Savestate.LoadPending = true;
+                }
+                if (!safe) ImGui.EndDisabled();
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("Override the build-stamp refusal (still waits for a safe frame).\n" +
+                                     BuildStamp.Explain(match));
+            }
             ImGui.PopID();
         }
     }

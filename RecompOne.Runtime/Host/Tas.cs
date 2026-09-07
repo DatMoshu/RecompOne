@@ -27,7 +27,22 @@ public static class Tas
     // to run at once, but ORing two independent flags instead of sharing one costs
     // nothing and removes the failure mode entirely if that assumption is ever wrong.
     public static bool PlayForceTurbo;
-    public static bool TurboActive => ForceTurbo || PlayForceTurbo || (Turbo && Playing && Frame < TurboUntil);
+
+    // Turbo the human asked for, from the Tab hotkey or the Debug menu. A THIRD flag for
+    // the same reason PlayForceTurbo is a second one: AutoMap and PlayRunner each assign
+    // their own every frame, so a user toggle stored in either would be cleared the next
+    // frame by a driver that never knew about it. Survives independently of both.
+    public static bool UserTurbo;
+
+    // A FOURTH flag, for a mod that fast-forwards on the game's behalf (PE1's
+    // cutscene-skip). Same reasoning as the two above, and one more: this one is owned by
+    // a mod that turns it on and off again within a few seconds, so it must not be able to
+    // clear a fast-forward the human asked for with Tab. Independent flags OR'd together
+    // is the only arrangement where "whoever turns it off last" cannot lose someone
+    // else's request. Defaults off; nothing sets it unless a mod is active.
+    public static bool ModTurbo;
+
+    public static bool TurboActive => ForceTurbo || PlayForceTurbo || UserTurbo || ModTurbo || (Turbo && Playing && Frame < TurboUntil);
 
     static string _recPath = "tas.rec";
     static readonly System.Text.StringBuilder _rec = new();
