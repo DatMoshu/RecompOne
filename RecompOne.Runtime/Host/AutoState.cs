@@ -29,8 +29,10 @@ public static class AutoState
     public static long IntervalFrames = 3600; // ~60 s at 60 fps; <= 0 disables
     /// <summary>How many of the newest to keep. A state is ~3.7 MB, so one a minute across an
     /// hour is 60 files and 200+ MB — and this now runs during every session of every port,
-    /// not only recorded ones. Retention is what keeps that from quietly filling a disk.</summary>
-    public static int Keep = 8;
+    /// not only recorded ones. Retention is what keeps that from quietly filling a disk.
+    /// Raised from 8 after a real loss: short diagnostic runs kept evicting the one deep
+    /// session that mattered (see <see cref="Prune"/>, which now also pins the furthest).</summary>
+    public static int Keep = 30;
 
     /// <summary>Their own directory, separate from the user's manual states and the room-index
     /// library in games/*/saves/states/, so nothing here is ever mistaken for something a
@@ -82,12 +84,24 @@ public static class AutoState
     public static bool IsAutoState(string path) =>
         System.IO.Path.GetFileName(path).StartsWith(Prefix, StringComparison.OrdinalIgnoreCase);
 
-    /// <summary>Keep the newest <see cref="Keep"/> files and delete the rest.
+    /// <summary>Keep the newest <see cref="Keep"/> files, ALWAYS keep the furthest-progress
+    /// one, and delete the rest.
     ///
     /// Ordered by last-write time and pruned from the OLD end, so the newest can never be the
     /// one deleted. Pruning scans the directory rather than tracking an in-process list, which
     /// is what stops states accumulating across runs — otherwise every restart would begin a
-    /// fresh list and the previous session's files would live forever.</summary>
+    /// fresh list and the previous session's files would live forever.
+    ///
+    /// **Recency alone is the wrong policy, and it cost a real session.** A long play session
+    /// that reached frame 14401 was evicted by a handful of short diagnostic runs that never
+    /// got past frame 6000, because every one of those was newer. The deep state is precisely
+    /// the expensive one to recreate — it is worth minutes of play, while the shallow ones are
+    /// worth seconds. So the highest frame number (parsed from the filename this class writes)
+    /// is pinned in addition to the newest N, and cannot be evicted by anything shallower.
+    ///
+    /// Only files carrying <see cref="Prefix"/> are ever considered, so a manual F5 state is
+    /// untouchable here by construction rather than by policy: it is not written by this class,
+    /// does not carry the prefix, and normally does not even live in this directory.</summary>
     static void Prune()
     {
         try
@@ -97,10 +111,24 @@ public static class AutoState
                 .GetFiles($"{Prefix}*.sav")
                 .OrderByDescending(f => f.LastWriteTimeUtc)
                 .ToList();
+
+            var furthest = files.OrderByDescending(FrameOf).FirstOrDefault();
             for (int i = Math.Max(1, Keep); i < files.Count; i++)
+            {
+                if (ReferenceEquals(files[i], furthest)) continue; // deepest progress is pinned
                 try { files[i].Delete(); } catch { }
+            }
         }
         catch { } // retention is best-effort; never let housekeeping break a run
+    }
+
+    /// <summary>Frame number out of a name this class wrote (`..._f014401.sav`); -1 if absent,
+    /// so a foreign or renamed file simply never wins the "furthest" pin.</summary>
+    static long FrameOf(System.IO.FileInfo f)
+    {
+        var m = System.Text.RegularExpressions.Regex.Match(f.Name, @"_f(\d+)\.sav$",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+        return m.Success && long.TryParse(m.Groups[1].Value, out var n) ? n : -1;
     }
 
     /// <summary>Convenience for a host: write the state and record it for retention, returning

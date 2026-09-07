@@ -17,6 +17,10 @@ public sealed class CdController
     private readonly Queue<(byte irqType, byte[] response)> _pendingIrqs = new();
     private byte _irqFlags;
     private int _seekLba;
+    /// <summary>Where the drive is positioned. Exposed read-only so a port can attribute a
+    /// transfer to a disc location -- BFM needs it to work out which sectors a raw CD-&gt;RAM DMA
+    /// is delivering, since that path bypasses the PAC/overlay model entirely.</summary>
+    public int CurrentLba => _seekLba;
     private byte _mode;
     // CdlSetfilter state. Mode bit 0x08 (CdlModeSF) makes the drive play ONLY the
     // Form2 audio sectors whose subheader file/channel match these; without it every
