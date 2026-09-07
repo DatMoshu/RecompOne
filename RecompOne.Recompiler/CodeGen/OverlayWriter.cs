@@ -216,7 +216,8 @@ public static class OverlayWriter
         SdkPatches.Apply(allFuncs);
 
         var uniqueAddrs = allFuncs.GroupBy(f => f.Start).Where(g => g.Count() == 1).Select(g => g.Key).ToHashSet();
-        var knownFuncs = allFuncs.Where(f => uniqueAddrs.Contains(f.Start)).ToDictionary(f => f.Start, f => $"{className}.{f.EmittedName}");
+        var knownFuncs = allFuncs.Where(f => uniqueAddrs.Contains(f.Start))
+                                 .ToDictionary(f => f.Start, f => $"{TypeNameFor(className, f.OverlayName)}.{f.EmittedName}");
 
         var funcOverlay = allFuncs.Where(f => uniqueAddrs.Contains(f.Start))
                                   .ToDictionary(f => f.Start, f => f.OverlayName ?? "");
@@ -230,7 +231,7 @@ public static class OverlayWriter
             uint mainAddr = Convert.ToUInt32(config.Main, 16);
             var mainFunc = allFuncs.FirstOrDefault(f => f.Start == mainAddr);
             if (mainFunc == null) throw new InvalidOperationException($"[recompiler] the main function not found at 0x{mainAddr:X8}");
-            mainCall = $"{className}.{mainFunc.EmittedName}";
+            mainCall = $"{TypeNameFor(className, mainFunc.OverlayName)}.{mainFunc.EmittedName}";
             Console.WriteLine($"[Recompiler] main: {mainCall} @ 0x{mainAddr:X8}");
         }
 
@@ -252,7 +253,7 @@ public static class OverlayWriter
                 .Where(kv => funcOverlay.TryGetValue(kv.Key, out var ov)
                              && (ov == result.Name || ov == "main" || string.IsNullOrEmpty(ov)))
                 .ToDictionary(kv => kv.Key, kv => kv.Value);
-            EmitOverlayFile(result.Name, result.Functions, className, scoped, config.Debug, result.LbaStart, outDir);
+            EmitOverlayFile(result.Name, result.Functions, TypeNameFor(className, result.Name), scoped, config.Debug, result.LbaStart, outDir);
         }
 
         Console.WriteLine("[Recompiler] Emitting Entry.cs");
@@ -307,7 +308,7 @@ public static class OverlayWriter
         Console.WriteLine($"[Recompiler] linear sweep found {swept.Count} function(s) (+{callees.Count} callees) in {overlayName}");
     }
 
-    static void EmitOverlayFile(string overlayName, List<MipsFunction> funcs, string className, Dictionary<uint, string> knownFuncs, bool debug, int lbaStart, string outDir)
+    static void EmitOverlayFile(string overlayName, List<MipsFunction> funcs, string typeName, Dictionary<uint, string> knownFuncs, bool debug, int lbaStart, string outDir)
     {
         var sb = new StringBuilder();
         sb.AppendLine("using RecompOne.Runtime.Context;");
@@ -316,7 +317,7 @@ public static class OverlayWriter
         sb.AppendLine();
         sb.AppendLine("namespace Recompiled;");
         sb.AppendLine();
-        sb.AppendLine($"public static partial class {className}");
+        sb.AppendLine($"public static partial class {typeName}");
         sb.AppendLine("{");
 
         foreach (var func in funcs.OrderBy(f => f.Start))
@@ -345,12 +346,33 @@ public static class OverlayWriter
         sb.AppendLine("        new Dictionary<uint, Action<CpuContext, IMemory>>");
         sb.AppendLine("        {");
         foreach (var func in funcs.Where(f => !f.IsStub).OrderBy(f => f.Start))
-            sb.AppendLine($"            [0x{func.Start:X8}u] = {className}.{func.EmittedName},");
+            sb.AppendLine($"            [0x{func.Start:X8}u] = {typeName}.{func.EmittedName},");
         sb.AppendLine("        };");
         sb.AppendLine("}");
 
         File.WriteAllText(Path.Combine(outDir, $"{overlayName}.cs"), sb.ToString());
     }
+
+    /// <summary>
+    /// The type that owns an overlay's emitted functions.
+    ///
+    /// A .NET type may contain at most 65535 methods, and the recompiler emits one static
+    /// method per recompiled function. Emitting every overlay's functions into a single
+    /// partial class therefore made that CLR limit a hard cap on how much of a game could be
+    /// mapped at all. Brave Fencer Musashi hit it: a 28-module scene selection reached 64238
+    /// methods, and going past it produced a build that reported no errors and then threw
+    /// `TypeLoadException: ... contains more methods than the current implementation allows`
+    /// before the first frame -- which reads as a black-screen hang, not as a build failure.
+    ///
+    /// Splitting per overlay removes the cap, because the limit is per TYPE. Partial *files*
+    /// do not help: they all merge into the same type. `main` deliberately keeps the plain
+    /// game class name so anything referring to `Recompiled.&lt;Game&gt;` still resolves, and
+    /// because a direct call may only bind statically within its own overlay or to main.
+    /// </summary>
+    static string TypeNameFor(string className, string? overlayName) =>
+        string.IsNullOrEmpty(overlayName) || overlayName == "main"
+            ? className
+            : $"{className}_{SafeIdentifier(overlayName)}";
 
     static string DispatchTableName(string name) => $"{char.ToUpperInvariant(name[0])}{name[1..]}DispatchTable";
 
