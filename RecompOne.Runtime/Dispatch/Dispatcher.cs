@@ -175,10 +175,26 @@ public static class Dispatcher
             : new OverlayInfo(n, _registry[n].LbaStart, f.Count, f.Keys.Min(), f.Keys.Max());
     }).ToList();
 
+    /// <summary>Rebind the overlay set a savestate captured.
+    ///
+    /// An overlay the state names but this build no longer registers is SKIPPED with a warning,
+    /// never thrown on. A state's value is its RAM and CPU context, which stay valid across an
+    /// overlay being renamed, split or dropped; failing the whole load over one stale name throws
+    /// away a player's progress for a bookkeeping mismatch. (Renaming BFM's scene tails from
+    /// sc_&lt;scene&gt;_tail to tail_&lt;lba&gt; -- because a scene turned out to have several -- bricked
+    /// every autostate that way.) The unbound overlay is not dangerous: nothing is bound in its
+    /// place, so a call into it faults loudly as an unmapped call at the real address, which is
+    /// the signal we want, rather than running some other module's code.</summary>
     public static void RestoreActive(IEnumerable<string> names)
     {
         _active.Clear();
         _funcMap.Clear();
-        foreach (var name in names) Load(name);
+        foreach (var name in names)
+        {
+            if (_registry.ContainsKey(name)) Load(name);
+            else Console.WriteLine($"[Dispatcher] savestate names overlay '{name}', which this " +
+                                   "build does not register - skipped (RAM is unaffected; a call " +
+                                   "into it will fault as an unmapped call).");
+        }
     }
 }
