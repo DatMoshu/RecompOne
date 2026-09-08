@@ -76,7 +76,13 @@ public static class LibEtc
     static void Advance(double nowMs)
     {
         _vcount++;
-        _nextPollTickMs = (nowMs > _nextPollTickMs ? nowMs : _nextPollTickMs) + VBlankMs;
+        // Scale the poll gate by the same speed multiplier the frame clock uses. A game that
+        // paces itself by polling VSync(-1) (Brave Fencer Musashi) never reaches
+        // FrameClock.Throttle, so without this the engine's speed control -- turbo included --
+        // silently did nothing for it while working everywhere else.
+        double speed = Host.FrameClock.Effective;
+        double step = speed <= 0 ? 0 : VBlankMs / speed;
+        _nextPollTickMs = (nowMs > _nextPollTickMs ? nowMs : _nextPollTickMs) + step;
     }
 
     public static void SaveState(BinaryWriter w) => w.Write(_vcount);

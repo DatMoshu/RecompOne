@@ -237,7 +237,7 @@ public static class LibCdStream
                 start = _writeIdx;
                 bool free = true;
                 for (int i = 0; i < n; i++) if (_busy[start + i]) { free = false; break; }
-                if (!free) { Thread.Sleep(1); continue; }
+                if (!free) { FullWaits++; Thread.Sleep(1); continue; }
             }
 
             if (!CollectFrame(cd, m, start, n)) continue;
@@ -252,6 +252,7 @@ public static class LibCdStream
                 _ready.Enqueue((start, n));
                 _writeIdx = start + n;
             }
+            FramesFed++; SectorsFed += n;
         }
     }
 
@@ -281,4 +282,12 @@ public static class LibCdStream
     }
 
     static ushort Read16(byte[] b, int o) => (ushort)(b[o] | (b[o + 1] << 8));
+
+    // Feed-rate counters, for answering "is a slow FMV the producer or the consumer?"
+    // with a number instead of a hypothesis. FullWaits counts iterations that found the
+    // ring full (producer AHEAD -- the game is the slow half); Frames/Sectors are what
+    // actually reached the game. Read by the --fps-log line; free when it is off.
+    public static long FullWaits;
+    public static long FramesFed;
+    public static long SectorsFed;
 }

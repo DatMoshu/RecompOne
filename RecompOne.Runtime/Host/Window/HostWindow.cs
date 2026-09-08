@@ -136,12 +136,10 @@ internal static class HostWindow
 
     // Flags that mean the run is DRIVING ITSELF. Used to fail safe: an automated run whose
     // author forgot --run-label must never claim to be the human's window.
-    static readonly string[] AutomationFlags =
-    [
-        "--replay", "--automap", "--newgame", "--exit-at", "--padtest", "--btnsweep",
-        "--autostart", "--autocross", "--savetest", "--snap", "--driveto", "--selftest",
-        "--export-room", "--export-bg", "--export-accum", "--probe", "--warp",
-    ];
+    // The flag list moved to RunKind, which now owns the human-or-agent question for the
+    // whole engine (the autostate directory depends on the same answer, and two copies of
+    // this list would eventually disagree about whose session a window is).
+    static readonly string[] AutomationFlags = RunKind.AutomationFlags;
 
     /// <summary>
     /// Says in the title bar whether this window belongs to the human or to an agent:
@@ -195,10 +193,16 @@ internal static class HostWindow
         if (now < _titleNextMs) return;
         _titleNextMs = now + 500.0;
         if (_baseTitle.Length == 0) _baseTitle = _window.Title;
-        // Turbo goes in the title so it is visible in a screenshot -- a fast-forwarding
-        // run otherwise just looks like a port behaving strangely.
+        // Turbo and speed go in the title so they are visible in a screenshot -- a
+        // fast-forwarding or slowed run otherwise just looks like a port behaving strangely.
+        // The fps figure counts EMULATED frames (PS1 vblanks), so at 2x it reads 120: that is
+        // the number the speed control moves, and it is meant to be read that way.
+        double speed = FrameClock.Effective;
         var turbo = Tas.TurboActive ? "  -  TURBO" : "";
-        _window.Title = $"{_baseTitle}  -  {RunLabel()}  -  {Runtime.Fps:F1} fps{turbo}";
+        var rate = speed <= 0 ? "  -  speed uncapped"
+                 : Math.Abs(speed - 1.0) < 1e-9 ? ""
+                 : $"  -  speed {speed:0.##}x";
+        _window.Title = $"{_baseTitle}  -  {RunLabel()}  -  {Runtime.Fps:F1} fps{rate}{turbo}";
     }
 
     public static void Shutdown()
@@ -265,6 +269,7 @@ internal static class HostWindow
         PanelManager.Register(new ControllerPanel());
         PanelManager.Register(new GameInfoPanel());
         PanelManager.Register(new SavestatePanel());
+        PanelManager.Register(new AssetViewerPanel());
         PanelManager.Register(new ModsPanel());
         PanelManager.Register(new LogPanel());
         PanelManager.Register(new SettingsPopup());
@@ -472,6 +477,18 @@ internal static class HostWindow
         _gl?.DeleteTexture(_displayTex);
         _gl?.DeleteTexture(_vramTex);
         _gl?.DeleteTexture(_ramTex);
+    }
+
+    // Panels draw on the GL thread, so this is safe to call from IPanel.Draw. Pass tex=0
+    // to allocate; returns the id (0 if GL is not up yet).
+    internal static uint UploadRgba(uint tex, int w, int h, byte[] rgba)
+    {
+        if (_gl == null || w <= 0 || h <= 0 || rgba.Length < w * h * 4) return 0;
+        if (tex == 0) tex = CreateTexture(_gl);
+        _gl.BindTexture(TextureTarget.Texture2D, tex);
+        _gl.TexImage2D<byte>(TextureTarget.Texture2D, 0, InternalFormat.Rgba, (uint)w, (uint)h, 0,
+            PixelFormat.Rgba, PixelType.UnsignedByte, rgba.AsSpan(0, w * h * 4));
+        return tex;
     }
 
     static uint CreateTexture(GL gl)

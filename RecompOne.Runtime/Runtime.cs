@@ -36,6 +36,9 @@ public static class Runtime
         // Before anything else prints, so the Log panel shows the boot sequence too --
         // overlay loads and CD init are exactly the lines a black-screen report needs.
         Host.LogTail.Install();
+        // --speed / --turbo-speed / --max-render-hz / --fast-audio, read from the process
+        // command line so every port gets them without wiring anything in its Program.cs.
+        FrameClock.ApplyCommandLine();
         HostWindow.Initialize(title);
         Audio.Initialize();
         Audio.SetMasterVolume(Config.ConfigManager.Game.Muted ? 0f : Config.ConfigManager.Game.MasterVolume);
@@ -56,6 +59,7 @@ public static class Runtime
     static readonly System.Diagnostics.Stopwatch _fpsClock = System.Diagnostics.Stopwatch.StartNew();
     static long _fpsFrames;
     static double _fpsLastMs;
+    static double _fpsLogNextMs;
 
     /// <param name="paced">The caller already waited for this frame's slot (LibEtc's VSync
     /// poll gate), so skip the frame clock — sleeping in both places halves the frame rate.</param>
@@ -76,17 +80,39 @@ public static class Runtime
             Fps = _fpsFrames * 1000.0 / (nowMs - _fpsLastMs);
             _fpsFrames = 0;
             _fpsLastMs = nowMs;
+            if (FrameClock.FpsLogSeconds > 0 && nowMs >= _fpsLogNextMs)
+            {
+                _fpsLogNextMs = nowMs + FrameClock.FpsLogSeconds * 1000.0;
+                double sp = FrameClock.Effective;
+                Console.WriteLine($"[fps] {Fps:0.0} emulated fps ({Fps / 60.0:0.00}x real time), frame={FrameCount}, " +
+                                  $"speed={(sp <= 0 ? "uncapped" : sp.ToString("0.##") + "x")}" +
+                                  $"{(Host.Tas.TurboActive ? " TURBO" : "")}" +
+                                  $" | stream frames={Sdk.LibCdStream.FramesFed} sectors={Sdk.LibCdStream.SectorsFed} ringFullWaits={Sdk.LibCdStream.FullWaits}");
+            }
         }
 
-        bool turbo = Host.Tas.TurboActive; // read BEFORE Tas.Tick (which may end replay this frame)
-        if (turbo) HostWindow.PumpLight();  // keep the window alive; no render, no vsync wait
-        else HostWindow.Present(Gpu);
-        if (!turbo) Host.CaptureManager.Tick(FrameCount); // --snap-window / --dump (engine-level, off by default)
-        if (!turbo) Audio.Attach(Spu);      // don't drive audio at fast-forward speed
+        // Two different things are called "turbo" and they need opposite treatment.
+        // HEADLESS is an unattended driver blasting through frames nobody will look at, so
+        // rendering and input are pure cost. VISIBLE is a human holding fast-forward, where
+        // dropping the picture and freezing the pad is the whole complaint: a skip that goes
+        // black and deaf to the controller reads as a hang, not as a fast-forward. So the
+        // visible path keeps presenting -- just not every frame; the redraw is capped at
+        // FrameClock.MaxRenderHz while the emulation runs on ahead.
+        bool headless = Host.Tas.HeadlessTurbo; // read BEFORE Tas.Tick (which may end replay this frame)
+        if (headless) HostWindow.PumpLight();  // keep the window alive; no render, no vsync wait
+        else if (FrameClock.ShouldRender()) HostWindow.Present(Gpu);
+        // Requesting a capture is not the same as taking one: RequestWindowCapture just marks
+        // the next DRAWN frame, so this is correct on a frame whose redraw was skipped, and
+        // gating it on `drew` instead silently loses most captures during a fast-forward.
+        if (!headless) Host.CaptureManager.Tick(FrameCount); // --snap-window / --dump (engine-level, off by default)
+        if (!headless) Audio.Attach(Spu);
+        Audio.Suppressed = headless || (Host.Tas.TurboActive && Audio.MuteWhileFast);
         Host.Tas.Tick();          // apply replay input / capture record input for this frame
         Host.AutoState.Tick(FrameCount); // raise a periodic savestate request (the game host decides if it's safe)
         Host.DriveRecorder.Tick();
-        if (!turbo && !paced) FrameClock.Throttle();  // uncapped while fast-forwarding or already paced
+        // Speed lives in the frame clock, so a visible fast-forward still comes through here
+        // and is paced by FrameClock.TurboSpeed rather than running unbounded.
+        if (!headless && !paced) FrameClock.Throttle();
         Sdk.LibCd.Tick();
         if (Mem != null) { Bios.BiosB.RefreshPad(Mem); Sdk.LibPad.Refresh(Mem); } //is this correct?
         Hle.GlBackend.ColorHistFrame();

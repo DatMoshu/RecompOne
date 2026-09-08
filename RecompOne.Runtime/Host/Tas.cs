@@ -42,7 +42,23 @@ public static class Tas
     // else's request. Defaults off; nothing sets it unless a mod is active.
     public static bool ModTurbo;
 
-    public static bool TurboActive => ForceTurbo || PlayForceTurbo || UserTurbo || ModTurbo || (Turbo && Playing && Frame < TurboUntil);
+    /// <summary>Fast-forward driven by an UNATTENDED driver (replay turbo, PE1's AutoMap,
+    /// the Play runner). Nobody is watching, so this is the blind blast: no render, no
+    /// audio, no input polling, OS events only often enough to honour a close request.</summary>
+    public static bool HeadlessTurbo => ForceTurbo || PlayForceTurbo || (Turbo && Playing && Frame < TurboUntil);
+
+    /// <summary>Fast-forward a HUMAN asked for (the Tab hotkey, the menu item, a mod's
+    /// cutscene-skip). Someone is watching, so the picture keeps updating and the pad keeps
+    /// working -- it is a speed change, not a headless blast. Rate comes from
+    /// FrameClock.TurboSpeed (0 = as fast as the host manages); the redraw is capped at
+    /// FrameClock.MaxRenderHz so a big multiplier does not become GPU-bound.</summary>
+    public static bool VisibleTurbo => UserTurbo || ModTurbo;
+
+    /// <summary>Emulated time is running faster than hardware, by either route. This is the
+    /// flag subsystems that must not pace against a wall clock read (LibCdStream's CD-speed
+    /// gate); it deliberately does NOT distinguish the two, because the CD has no opinion
+    /// about whether anyone is watching.</summary>
+    public static bool TurboActive => HeadlessTurbo || VisibleTurbo;
 
     static string _recPath = "tas.rec";
     static readonly System.Text.StringBuilder _rec = new();

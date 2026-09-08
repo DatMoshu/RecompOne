@@ -149,18 +149,39 @@ public static class StateLoad
             return null;
         }
 
+        // The OTHER run kind's autostate folder is searched but DEMOTED: a state from it can
+        // only win when nothing else qualifies. Newest-wins alone would undo the point of
+        // splitting the directories -- a three-minute agent run would out-rank an hour of a
+        // person's play simply by being more recent, which is the cross-contamination the
+        // split exists to stop. Everything else still competes on recency as before, so a
+        // fresh F5 into state1.sav can still be "latest".
+        var foreignAuto = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var d in new[] { "autostates", "autostates_agent" })
+        {
+            if (string.Equals(d, Host.AutoState.Dir, StringComparison.OrdinalIgnoreCase)) continue;
+            try { foreignAuto.Add(Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, d))); } catch { }
+            try { foreignAuto.Add(Path.GetFullPath(d)); } catch { }
+        }
+
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         FileInfo? best = null;
+        bool bestForeign = true;
         foreach (var dir in CandidateDirs())
         {
-            if (!seen.Add(Path.GetFullPath(dir))) continue;
+            string full;
+            try { full = Path.GetFullPath(dir); } catch { continue; }
+            if (!seen.Add(full)) continue;
             if (!Directory.Exists(dir)) continue;
+            bool foreign = foreignAuto.Contains(full);
             foreach (var f in new DirectoryInfo(dir).GetFiles("*.sav"))
             {
                 // Only files that are actually ours. A PS1 memory-card image (carda.sav)
                 // conventionally lives next to the exe and must never be picked as "latest".
                 if (!IsStateFile(f.FullName)) continue;
-                if (best == null || f.LastWriteTimeUtc > best.LastWriteTimeUtc) best = f;
+                bool better = best == null
+                    || (bestForeign && !foreign)                               // ours beats theirs
+                    || (bestForeign == foreign && f.LastWriteTimeUtc > best.LastWriteTimeUtc);
+                if (better) { best = f; bestForeign = foreign; }
             }
         }
 
@@ -172,7 +193,8 @@ public static class StateLoad
         }
 
         var age = DateTime.UtcNow - best.LastWriteTimeUtc;
-        Console.WriteLine($"[loadstate] latest -> {best.FullName} ({FormatAge(age)} old)");
+        Console.WriteLine($"[loadstate] latest -> {best.FullName} ({FormatAge(age)} old)" +
+                          (bestForeign ? $" [from the other run kind's states; this is a {Host.RunKind.Name} run]" : ""));
         return best.FullName;
     }
 
@@ -261,8 +283,16 @@ public static class StateLoad
         // "resume where I was" almost always means. Resolved against BOTH the exe directory
         // and the process cwd because AutoState.Dir is relative and a launcher .bat can start
         // the exe from either.
-        yield return Path.Combine(AppContext.BaseDirectory, Host.AutoState.Dir);
-        yield return Host.AutoState.Dir;
+        // BOTH autostate directories, not just this run kind's. Host.AutoState.Dir now
+        // depends on whether a human or an agent launched (see Host.RunKind), and resolving
+        // only the current kind's folder would make an agent unable to see a state the user
+        // asked it to resume from -- a directory split for retention must not become a
+        // directory split for discovery.
+        foreach (var auto in new[] { Host.AutoState.Dir, "autostates", "autostates_agent" }.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            yield return Path.Combine(AppContext.BaseDirectory, auto);
+            yield return auto;
+        }
         foreach (var d in SearchDirs) yield return d;
         yield return AppContext.BaseDirectory;
         yield return ".";

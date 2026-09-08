@@ -38,6 +38,27 @@ public static class Savestate
     public static bool SavePending, LoadPending;
     public static string SlotPath = "state1.sav";
 
+    // Where a --loadstate boot load reads from, when that is NOT the manual slot.
+    //
+    // This exists because of a real, silent data loss. --loadstate used to be implemented by
+    // pointing SlotPath at the file it had resolved, which quietly made that file the F5
+    // TARGET as well as the load source. Boot from an autostate -- the normal way to resume
+    // the crash/fix/resume loop -- and every subsequent F5 wrote back into a file inside
+    // autostates/ carrying the auto_ prefix. AutoState.Prune then deleted it as an ordinary
+    // disposable capture, and because the "furthest progress" pin reads the frame number out
+    // of the FILENAME, a file whose name was frozen at f018001 while its contents advanced
+    // past frame 40739 looked like the shallowest state present and was evicted FIRST. Nine
+    // manual saves across an hour of play went that way with no error and no warning.
+    //
+    // So a load source and a save destination are now separate things. F5 always writes the
+    // user's own slot; only the boot load reads this, and only once.
+    public static string? BootLoadPath;
+
+    /// <summary>What a pending load should read: the boot-load file if one is outstanding,
+    /// otherwise the manual slot. Never returns the autostate directory unless the user
+    /// pointed the manual slot there themselves.</summary>
+    public static string LoadPathPending => BootLoadPath ?? SlotPath;
+
     // Debug escape hatch, added at the user's explicit request (Savestates panel "Force
     // Load"): apply a load on the very next frame regardless of the safety gate a game
     // host enforces around LoadPending (see PE1's Patches.PerFrame `gateOk`). This is

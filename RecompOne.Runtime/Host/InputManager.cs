@@ -312,6 +312,27 @@ internal static unsafe class InputManager
         // skipping is usually a 40-second FMV or a boot sequence, and holding a key for
         // that long while also playing is worse than pressing it twice.
         if (key == Key.Tab) Tas.UserTurbo = !Tas.UserTurbo;
+        // Emulation speed, on the keys emulators conventionally use. Steps through the same
+        // ladder the Speed menu offers so the two agree, and reports on the console because
+        // the only other feedback is the title bar, which a fullscreen player cannot see.
+        if (key == Key.Minus) StepSpeed(-1);
+        if (key == Key.Equal) StepSpeed(+1);
+        if (key == Key.Number0) { FrameClock.Speed = 1.0; Console.WriteLine("[speed] 1x (normal)"); }
+    }
+
+    static readonly double[] SpeedLadder = [0.25, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 8.0];
+
+    static void StepSpeed(int dir)
+    {
+        // Uncapped sits above the top of the ladder: stepping down from it lands on the
+        // fastest finite rate, which is what someone pressing "-" out of an uncapped run
+        // expects -- not a jump back to 1x.
+        int i = FrameClock.Speed <= 0 ? SpeedLadder.Length
+              : Array.FindIndex(SpeedLadder, v => Math.Abs(v - FrameClock.Speed) < 1e-9);
+        if (i < 0) i = Array.IndexOf(SpeedLadder, 1.0);
+        i = Math.Clamp(i + dir, 0, SpeedLadder.Length);
+        FrameClock.Speed = i == SpeedLadder.Length ? 0 : SpeedLadder[i];
+        Console.WriteLine(FrameClock.Speed <= 0 ? "[speed] uncapped" : $"[speed] {FrameClock.Speed:0.##}x");
     }
 
     // --- Controller diagnostics (Host/Window/Panels/Debug/ControllerPanel.cs) ---------

@@ -64,6 +64,17 @@ internal static unsafe class Audio
         }
     }
 
+    /// <summary>Silence the output without stopping the SPU. Set while fast-forwarding:
+    /// the mixer thread still runs the SPU exactly as it would otherwise (so no voice state
+    /// diverges), it just does not send the result to the speakers. Emulated audio played
+    /// back at several times speed is a screech, and it was the loudest half of "the skip
+    /// looks broken".</summary>
+    public static volatile bool Suppressed;
+
+    /// <summary>Whether a VISIBLE fast-forward silences audio (a headless one always does).
+    /// On by default; the Speed menu exposes it, since some fast-forwards are worth hearing.</summary>
+    public static bool MuteWhileFast = true;
+
     public static void Attach(Spu? spu)
     {
         if (spu != null) _spu = spu;
@@ -94,7 +105,11 @@ internal static unsafe class Audio
             uint buf = 0;
             _al.SourceUnqueueBuffers(_source, 1, &buf);
 
+            // Always Mix, even when suppressed: Mix advances voice/ADPCM decode state, so
+            // skipping it would leave the SPU somewhere different than an unsuppressed run.
+            // Zero the result instead -- silence with identical state.
             spu.Mix(_sampleBuf, FramesPerBuffer);
+            if (Suppressed) Array.Clear(_sampleBuf);
 
             _al.BufferData(buf, BufferFormat.Stereo16, _sampleBuf, 44100);
             _al.SourceQueueBuffers(_source, 1, &buf);

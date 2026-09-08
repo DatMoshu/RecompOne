@@ -28,6 +28,7 @@ public static class XaAudio
         {
             _oldL = _olderL = _oldR = _olderR = 0;
             _writeIdx = _readIdx = _count = 0;
+            SectorsDecoded = SamplesProduced = SamplesDropped = 0;
             _playing = false;
             _pos = 0;
             _s0L = _s0R = _s1L = _s1R = 0;
@@ -88,18 +89,27 @@ public static class XaAudio
         lock (_gate)
         {
             _srcRate = rate;
+            SectorsDecoded++;
+            SamplesProduced += n;
             for (int i = 0; i < n; i++)
             {
                 _ring[_writeIdx] = frames[i];
                 _writeIdx = (_writeIdx + 1) & Mask;
                 if (_count < Capacity) _count++;
-                else _readIdx = (_readIdx + 1) & Mask;
+                else { _readIdx = (_readIdx + 1) & Mask; SamplesDropped++; }
             }
             if (!_playing && _count >= PrimeFrames) _playing = true;
         }
     }
 
     public static int BufferedSamples { get { lock (_gate) return _count; } }
+
+    /// <summary>Diagnostics: sectors decoded, samples produced, and samples DROPPED because the
+    /// ring was already full. A non-zero drop count means the drive is delivering XA faster than
+    /// the audio clock consumes it -- which sounds like music racing and voice lines ending early,
+    /// not like a pitch change, because the resampler is locked to the output rate either way.</summary>
+    public static long SectorsDecoded, SamplesProduced, SamplesDropped;
+    public static int SourceRate => _srcRate;
 
     public static bool Next(out short left, out short right)
     {

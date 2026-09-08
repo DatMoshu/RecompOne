@@ -55,6 +55,21 @@ public sealed class SavestatePanel : IPanel
         bool safe = SafeToLoadProbe == null || (mem != null && Probes.TryFlag(SafeToLoadProbe, mem, out var v) && v);
 
         ImGui.TextDisabled($"Slots: {SlotsDir}");
+        // Where F5 lands, stated outright. It was possible to be several hours into a session
+        // with every manual save going somewhere the user never chose and could not see, so
+        // the destination is now always on screen rather than inferable.
+        ImGui.Text("F5 saves to:");
+        ImGui.SameLine();
+        ImGui.TextColored(new Vector4(0.55f, 0.85f, 1f, 1f), Savestate.SlotPath);
+        if (AutoState.IsAutoState(Savestate.SlotPath))
+        {
+            ImGui.SameLine();
+            ImGui.TextColored(new Vector4(1f, 0.4f, 0.4f, 1f), "(DISPOSABLE!)");
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("The manual slot is pointing at an automatic capture. Retention can\n" +
+                                 "delete it. Use \"Save New\" to move your saves somewhere durable.");
+        }
+        ImGui.TextDisabled($"This is {(RunKind.IsHuman ? "a human" : "an agent")} run; its automatic captures go to {AutoState.Dir}/.");
         if (!safe)
             ImGui.TextColored(new Vector4(1f, 0.6f, 0.2f, 1f), "Not at a safe point to load right now (mid-FMV/menu/loading).");
 
@@ -113,6 +128,21 @@ public sealed class SavestatePanel : IPanel
 
             ImGui.PushID(path);
             ImGui.TextUnformatted(label);
+            ImGui.SameLine();
+            // MANUAL vs AUTO is the distinction that matters most in this list: one is
+            // something a person chose to keep, the other is deleted on a timer. They were
+            // previously indistinguishable here, so a disposable file could look like a save.
+            bool auto = AutoState.IsAutoState(path);
+            ImGui.TextColored(auto ? new Vector4(0.7f, 0.7f, 0.7f, 1f) : new Vector4(0.5f, 0.9f, 0.5f, 1f),
+                              auto ? "[AUTO]" : "[MANUAL]");
+            ImGui.SameLine();
+            ImGui.TextDisabled(Describe(path));
+            if (string.Equals(Path.GetFullPath(path), SafeFullPath(Savestate.SlotPath),
+                              StringComparison.OrdinalIgnoreCase))
+            {
+                ImGui.SameLine();
+                ImGui.TextColored(new Vector4(0.55f, 0.85f, 1f, 1f), "<- F5 slot");
+            }
             if (!current)
             {
                 ImGui.SameLine();
@@ -129,7 +159,11 @@ public sealed class SavestatePanel : IPanel
             if (!canLoad) ImGui.BeginDisabled();
             if (ImGui.SmallButton("Load"))
             {
-                Savestate.SlotPath = path;
+                // BootLoadPath, NOT SlotPath. Loading is a READ; making it silently repoint
+                // the F5 destination is what fed an hour of a person's manual saves into the
+                // autostate pool, where retention deleted them. Where you load from and where
+                // you save to are different questions and the UI must not conflate them.
+                Savestate.BootLoadPath = path;
                 Savestate.LoadPending = true;
             }
             if (!canLoad) ImGui.EndDisabled();
@@ -140,7 +174,16 @@ public sealed class SavestatePanel : IPanel
                 ImGui.SetTooltip("Not at a safe frame to apply a load right now.");
 
             ImGui.SameLine();
+            // Saving DOES repoint the slot -- that is what the button means. It refuses only
+            // for a disposable file: a manual save aimed into the autostate pool is deleted
+            // by retention without warning, which is exactly how saves were lost before.
+            bool disposable = AutoState.IsAutoState(path);
+            if (disposable) ImGui.BeginDisabled();
             if (ImGui.SmallButton("Save Here")) { Savestate.SlotPath = path; Savestate.SavePending = true; }
+            if (disposable) ImGui.EndDisabled();
+            if (disposable && ImGui.IsItemHovered())
+                ImGui.SetTooltip("This is an automatic capture. Saving into it would put your save in the\n" +
+                                 "disposable pool, where retention deletes it. Use \"Save New\" above instead.");
 
             ImGui.SameLine();
             if (!_forceArmed) ImGui.BeginDisabled();
@@ -153,7 +196,7 @@ public sealed class SavestatePanel : IPanel
                 // already read what this does; being refused by a second, quieter gate after
                 // that would just look broken.
                 StateLoad.Force = true;
-                Savestate.SlotPath = path;
+                Savestate.BootLoadPath = path;   // read-only source; see the Load button above
                 Savestate.ForceLoadPending = true;
             }
             ImGui.PopStyleColor(2);
@@ -175,18 +218,35 @@ public sealed class SavestatePanel : IPanel
     // in this section is disposable by design and will be deleted by retention on its own.
     static void DrawAutoStates(bool safe)
     {
-        if (!Directory.Exists(AutoState.Dir)) return;
+        // BOTH directories, always, each labelled with whose they are. Hiding the other run
+        // kind's captures would trade one invisible-state problem for another: the point of
+        // the split is that an agent cannot DELETE the user's states, not that either side
+        // gets a secret folder the other cannot see.
+        foreach (var dir in new[] { AutoState.Dir, "autostates", "autostates_agent" }
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
+            DrawAutoStateDir(dir, safe);
+    }
 
-        var files = new DirectoryInfo(AutoState.Dir)
+    static void DrawAutoStateDir(string dir, bool safe)
+    {
+        if (!Directory.Exists(dir)) return;
+
+        var files = new DirectoryInfo(dir)
             .GetFiles($"{AutoState.Prefix}*.sav")
             .OrderByDescending(f => f.LastWriteTimeUtc)
             .ToList();
         if (files.Count == 0) return;
 
+        bool mine = string.Equals(dir, AutoState.Dir, StringComparison.OrdinalIgnoreCase);
+        string whose = string.Equals(dir, "autostates_agent", StringComparison.OrdinalIgnoreCase)
+            ? "agent runs" : "human play";
+
         ImGui.Separator();
-        if (!ImGui.CollapsingHeader($"Automatic (disposable) — {files.Count} kept")) return;
-        ImGui.TextDisabled($"Captured every {AutoState.IntervalFrames / 60.0:0.#}s into {AutoState.Dir}/.");
-        ImGui.TextDisabled($"Oldest are deleted automatically; only the newest {AutoState.Keep} are kept.");
+        ImGui.PushID(dir);
+        if (!ImGui.CollapsingHeader($"Automatic (disposable) - {whose} - {files.Count} kept###{dir}"))
+        { ImGui.PopID(); return; }
+        ImGui.TextDisabled($"{dir}/ - written by {whose}{(mine ? ", including this run" : "")}.");
+        ImGui.TextDisabled($"Captured every {AutoState.IntervalFrames / 60.0:0.#}s; only the newest {AutoState.Keep} are kept.");
 
         // This is the list the crash/fix/resume loop actually uses, so it is also where the
         // build-stamp override has to be reachable: after a fix-and-rebuild EVERY auto-state
@@ -198,7 +258,7 @@ public sealed class SavestatePanel : IPanel
             var match = StateLoad.Classify(f.FullName);
             bool current = match is StampMatch.Same or StampMatch.Unknown;
             ImGui.PushID(f.FullName);
-            ImGui.TextUnformatted($"{f.Name}   {f.LastWriteTime:HH:mm:ss}");
+            ImGui.TextUnformatted($"{f.Name}   {f.LastWriteTime:HH:mm:ss}  ({Age(f.LastWriteTimeUtc)} ago)");
             if (!current)
             {
                 ImGui.SameLine();
@@ -213,7 +273,7 @@ public sealed class SavestatePanel : IPanel
             if (!canLoad) ImGui.BeginDisabled();
             if (ImGui.SmallButton("Load"))
             {
-                Savestate.SlotPath = f.FullName;
+                Savestate.BootLoadPath = f.FullName; // read-only source, never the F5 target
                 Savestate.LoadPending = true;
             }
             if (!canLoad) ImGui.EndDisabled();
@@ -227,7 +287,7 @@ public sealed class SavestatePanel : IPanel
                 if (ImGui.SmallButton("Load anyway"))
                 {
                     StateLoad.Force = true;
-                    Savestate.SlotPath = f.FullName;
+                    Savestate.BootLoadPath = f.FullName; // read-only source
                     Savestate.LoadPending = true;
                 }
                 if (!safe) ImGui.EndDisabled();
@@ -237,6 +297,36 @@ public sealed class SavestatePanel : IPanel
             }
             ImGui.PopID();
         }
+        ImGui.PopID();
+    }
+
+    /// <summary>Time, age and size for one state file -- the things you actually need to
+    /// tell two candidates apart. A filename and a build stamp were not enough: picking the
+    /// right save out of a list meant launching them one at a time to see where they were.</summary>
+    static string Describe(string path)
+    {
+        try
+        {
+            var fi = new FileInfo(path);
+            return $"{fi.LastWriteTime:HH:mm:ss}  ({Age(fi.LastWriteTimeUtc)} ago)  {fi.Length / (1024.0 * 1024.0):0.0} MB";
+        }
+        catch { return ""; }
+    }
+
+    static string Age(DateTime utc)
+    {
+        var t = DateTime.UtcNow - utc;
+        return t.TotalMinutes < 1 ? $"{t.TotalSeconds:F0}s"
+             : t.TotalHours < 1 ? $"{t.TotalMinutes:F0}m"
+             : t.TotalDays < 1 ? $"{t.TotalHours:F1}h"
+             : $"{t.TotalDays:F1}d";
+    }
+
+    /// <summary>GetFullPath that cannot throw -- SlotPath is user-settable and a malformed
+    /// value must not take the whole panel down mid-frame.</summary>
+    static string SafeFullPath(string p)
+    {
+        try { return Path.GetFullPath(p); } catch { return p; }
     }
 
     static Dictionary<string, string>? LoadLabels()

@@ -36,8 +36,16 @@ public static class AutoState
 
     /// <summary>Their own directory, separate from the user's manual states and the room-index
     /// library in games/*/saves/states/, so nothing here is ever mistaken for something a
-    /// person made and chose to keep. Relative to the running exe, hence per-game already.</summary>
-    public static string Dir = "autostates";
+    /// person made and chose to keep. Relative to the running exe, hence per-game already.
+    ///
+    /// SPLIT BY RUN KIND (see <see cref="RunKind"/>): an agent run writes to
+    /// `autostates_agent/` and a human run to `autostates/`. They shared one folder until a
+    /// real loss made the problem concrete -- retention is per-directory and capped, so a
+    /// few short diagnostic runs could evict every state from an hour of actual play, and
+    /// the person who lost them had no way to see it coming. Two directories means an agent
+    /// physically cannot prune the user's history, which is a stronger guarantee than any
+    /// amount of care about ordering or pinning.</summary>
+    public static string Dir = RunKind.IsHuman ? "autostates" : "autostates_agent";
     /// <summary>Prefix on top of the directory: even copied elsewhere, the name says throwaway.</summary>
     public static string Prefix = "auto_";
 
@@ -116,10 +124,35 @@ public static class AutoState
             for (int i = Math.Max(1, Keep); i < files.Count; i++)
             {
                 if (ReferenceEquals(files[i], furthest)) continue; // deepest progress is pinned
+                if (IsLiveSaveTarget(files[i])) continue;          // never delete what F5 writes
                 try { files[i].Delete(); } catch { }
             }
         }
         catch { } // retention is best-effort; never let housekeeping break a run
+    }
+
+    /// <summary>True if this file is somewhere a manual save could currently land.
+    ///
+    /// The class comment above used to argue that a manual state was safe here "by
+    /// construction": not written by this class, no <see cref="Prefix"/>, not in this
+    /// directory. --loadstate broke all three at once by repointing the F5 slot at the
+    /// autostate it had just loaded, and an hour of a person's saves was pruned as
+    /// disposable. That root cause is fixed (Savestate.BootLoadPath), so this check should
+    /// never fire -- which is exactly why it is cheap to keep. Retention deleting a file
+    /// someone is actively saving into is unrecoverable, and the cost of being wrong in the
+    /// other direction is one undeleted 3.7 MB file.</summary>
+    static bool IsLiveSaveTarget(System.IO.FileInfo f)
+    {
+        try
+        {
+            var full = f.FullName;
+            return Same(full, Savestate.SlotPath) || Same(full, Savestate.BootLoadPath);
+        }
+        catch { return false; }
+
+        static bool Same(string full, string? other) =>
+            !string.IsNullOrEmpty(other) &&
+            string.Equals(full, System.IO.Path.GetFullPath(other), StringComparison.OrdinalIgnoreCase);
     }
 
     /// <summary>Frame number out of a name this class wrote (`..._f014401.sav`); -1 if absent,
