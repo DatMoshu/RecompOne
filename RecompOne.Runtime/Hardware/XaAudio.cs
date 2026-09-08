@@ -36,6 +36,23 @@ public static class XaAudio
         }
     }
 
+    /// <summary>Drop everything queued but stay running — for a seek within a stream.
+    /// Samples already in the buffer belong to the part of the movie that was just jumped
+    /// over, so playing them out after the seek is heard as a burst of garble. The ADPCM
+    /// predictor history goes too: it is only meaningful relative to the sector that
+    /// produced it. Cumulative counters are deliberately left alone, unlike
+    /// <see cref="Reset"/> — this is a discontinuity inside a run, not a new one.</summary>
+    public static void Flush()
+    {
+        lock (_gate)
+        {
+            _writeIdx = _readIdx = _count = 0;
+            _oldL = _olderL = _oldR = _olderR = 0;
+            _s0L = _s0R = _s1L = _s1R = 0;
+            _pos = 0;
+        }
+    }
+
     static int Clamp(int v) => v < -32768 ? -32768 : v > 32767 ? 32767 : v;
 
     static void DecodeBlock(byte[] sec, int b, int blk, ref int old, ref int older, int[] dst)

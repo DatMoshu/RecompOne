@@ -42,8 +42,18 @@ public static class LibGpu
         gpu.WriteGp0(((uint)(ushort)h << 16) | (ushort)w);
         int words = (w * h + 1) / 2;
         var staged = MdecOutStaging.Pop(c.A1);
+        int nz = 0;
+        bool count = Log.GpuOn;
         for (uint i = 0; i < words; i++)
-            gpu.WriteGp0(staged != null && i < staged.Length ? staged[i] : m.ReadU32(c.A1 + i * 4u));
+        {
+            uint word = staged != null && i < staged.Length ? staged[i] : m.ReadU32(c.A1 + i * 4u);
+            if (count && word != 0) nz++;
+            gpu.WriteGp0(word);
+        }
+        // nonZero separates "the rect was filled" from "the rect was filled with picture" --
+        // a black FMV looks identical to a missing transfer unless you count.
+        if (Log.GpuOn)
+            Log.Gpu($"LoadImage rect=({x},{y},{w},{h}) src=0x{c.A1:X8} staged={(staged == null ? "no" : staged.Length.ToString())} nonZero={nz}/{words}");
         c.V0 = 0;
     }
 

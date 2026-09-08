@@ -94,6 +94,7 @@ internal static class MainMenuBar
             Toggle<SavestatePanel>("Savestates");
             Toggle<ModsPanel>("Mods");
             Toggle<AssetViewerPanel>("Asset Viewer");
+            Toggle<SpeedrunPanel>("Speedrun");
             ImGui.EndMenu();
         }
 

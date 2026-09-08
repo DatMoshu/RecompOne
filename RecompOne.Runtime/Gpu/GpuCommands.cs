@@ -124,6 +124,10 @@ public sealed partial class Gpu
         _loadY = (int)((_fifo[1] >> 16) & 0x1FF);
         _loadW = (int)(_fifo[2] & 0xFFFF); if (_loadW == 0) _loadW = 0x400; else _loadW &= 0x3FF; if (_loadW == 0) _loadW = 0x400;
         _loadH = (int)((_fifo[2] >> 16) & 0xFFFF); if (_loadH == 0) _loadH = 0x200; else _loadH &= 0x1FF; if (_loadH == 0) _loadH = 0x200;
+        // Diagnostic: a rect that is replaced before it was filled means the pixel data
+        // never arrived (the transfer that should have followed GP0(A0) did not happen).
+        if (_loadImage && Log.GpuOn)
+            Log.Gpu($"imageLoad ABANDONED x={_loadX} y={_loadY} w={_loadW} h={_loadH} got={_loadPx}/{_loadW * _loadH} halfwords");
         _loadPx = 0;
         _loadImage = true;
         Log.Gpu($"imageLoad x={_loadX} y={_loadY} w={_loadW} h={_loadH}");

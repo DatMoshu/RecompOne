@@ -8,6 +8,13 @@ namespace RecompOne.Runtime.Host;
 public static class CaptureManager
 {
     public static int SnapWindowEvery; // --snap-window=N, 0 = off
+
+    // --snap-display=N, 0 = off. The CLEAN game framebuffer (no panels), decoded from
+    // VRAM on the CPU by Screenshot. Deliberately a separate path from the window
+    // capture above: it shares no code with the GL present shader, so when the window
+    // shows black the two together say whether the pixels are missing from VRAM or only
+    // from what the presenter drew.
+    public static int SnapDisplayEvery;
     // Standalone JSON-only cadence (no image), 0 = off. Not wired to a CLI flag here:
     // some ports already have an unrelated `--dump=` flag (e.g. PE2's function-entry
     // trace histogram), so pick a game-specific flag name when wiring this up rather
@@ -35,6 +42,12 @@ public static class CaptureManager
         // describe the identical rendered frame.
         if (SnapWindowEvery > 0 && frame % SnapWindowEvery == 0)
             HostWindow.RequestWindowCapture(Path.Combine(OutDir, $"window_{frame:D6}.png"));
+
+        if (SnapDisplayEvery > 0 && frame % SnapDisplayEvery == 0)
+        {
+            Directory.CreateDirectory(OutDir);
+            Screenshot.Save(Path.Combine(OutDir, $"display_{frame:D6}.png"));
+        }
 
         if (DumpEvery > 0 && frame % DumpEvery == 0)
             CaptureData.Write(Path.Combine(OutDir, $"dump_{frame:D6}.json"));

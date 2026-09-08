@@ -1,4 +1,4 @@
-using RecompOne.Runtime.Context;
+﻿using RecompOne.Runtime.Context;
 using RecompOne.Runtime.Host;
 using RecompOne.Runtime.Memory;
 
@@ -39,6 +39,7 @@ public static class Runtime
         // --speed / --turbo-speed / --max-render-hz / --fast-audio, read from the process
         // command line so every port gets them without wiring anything in its Program.cs.
         FrameClock.ApplyCommandLine();
+        Host.Speedrun.ApplyCommandLine();
         HostWindow.Initialize(title);
         Audio.Initialize();
         Audio.SetMasterVolume(Config.ConfigManager.Game.Muted ? 0f : Config.ConfigManager.Game.MasterVolume);
@@ -63,6 +64,23 @@ public static class Runtime
 
     /// <param name="paced">The caller already waited for this frame's slot (LibEtc's VSync
     /// poll gate), so skip the frame clock — sleeping in both places halves the frame rate.</param>
+    /// <summary>Frames whose vblank was produced by a BIOS game thread rather than main.
+    /// Non-zero is normal for a game whose tasks call VSync; it only matters if main stops
+    /// presenting entirely, which would show as a frozen picture on a running game.</summary>
+    public static long OffThreadPresents;
+    static bool _offThreadReported;
+
+    static void NoteOffThreadPresent()
+    {
+        OffThreadPresents++;
+        if (_offThreadReported) return;
+        _offThreadReported = true;
+        Console.WriteLine("[runtime] a BIOS game thread presented a frame (it called VSync). The vblank, " +
+                          "interrupts and input are handled normally; the window redraw is left to the main " +
+                          "thread because the GL context is thread-affine. If the picture appears frozen while " +
+                          "the game runs, main has stopped presenting and the redraw needs to follow the baton.");
+    }
+
     public static void PresentFrame(bool paced = false)
     {
         // Presentation touches the GL context, which is thread-affine. Under the BIOS
@@ -71,7 +89,18 @@ public static class Runtime
         // main -- an assumption like this holds until the port that breaks it, and the
         // symptom would be inexplicable GL corruption instead of an obvious error.
         // No-op unless the thread model is on.
-        Bios.BiosB.AssertMainThread(nameof(PresentFrame));
+        // The GL context and the window message pump are thread-affine; the REST of a frame
+        // (vblank count, IRQ dispatch, TAS, audio, pad refresh, FrameHook) is not, because the
+        // baton guarantees only one thread runs emulated code at a time. This used to assert
+        // and throw, on the assumption that only main ever presents. Dino Crisis disproves it:
+        // its 0x80077868 task calls VSync, and main is parked inside ChangeTh while that task
+        // runs, so main CANNOT produce the vblank the task is waiting for. Throwing killed the
+        // task; skipping the whole frame would stop the game's clock. So an off-thread frame
+        // does everything except the window work, and the picture refreshes on main's next
+        // present. A game that presents ONLY from tasks would show a frozen picture, so the
+        // first occurrence is reported with a running count rather than passing silently.
+        bool onMain = Bios.BiosB.OnMainThread;
+        if (!onMain) NoteOffThreadPresent();
         FrameCount++;
         _fpsFrames++;
         double nowMs = _fpsClock.Elapsed.TotalMilliseconds;
@@ -99,23 +128,27 @@ public static class Runtime
         // visible path keeps presenting -- just not every frame; the redraw is capped at
         // FrameClock.MaxRenderHz while the emulation runs on ahead.
         bool headless = Host.Tas.HeadlessTurbo; // read BEFORE Tas.Tick (which may end replay this frame)
-        if (headless) HostWindow.PumpLight();  // keep the window alive; no render, no vsync wait
+        if (!onMain) { /* window/GL work belongs to main; see NoteOffThreadPresent */ }
+        else if (headless) HostWindow.PumpLight();  // keep the window alive; no render, no vsync wait
         else if (FrameClock.ShouldRender()) HostWindow.Present(Gpu);
         // Requesting a capture is not the same as taking one: RequestWindowCapture just marks
         // the next DRAWN frame, so this is correct on a frame whose redraw was skipped, and
         // gating it on `drew` instead silently loses most captures during a fast-forward.
-        if (!headless) Host.CaptureManager.Tick(FrameCount); // --snap-window / --dump (engine-level, off by default)
+        if (!headless && onMain) Host.CaptureManager.Tick(FrameCount); // --snap-window / --dump (engine-level, off by default); reads VRAM through the backend, so main only
         if (!headless) Audio.Attach(Spu);
         Audio.Suppressed = headless || (Host.Tas.TurboActive && Audio.MuteWhileFast);
         Host.Tas.Tick();          // apply replay input / capture record input for this frame
         Host.AutoState.Tick(FrameCount); // raise a periodic savestate request (the game host decides if it's safe)
+        // One presented frame is one PS1 vblank, so counting them here IS the game's own
+        // clock -- it does not move when the host stutters or a redraw is skipped.
+        if (Mem != null) Host.Speedrun.Tick(Mem);
         Host.DriveRecorder.Tick();
         // Speed lives in the frame clock, so a visible fast-forward still comes through here
         // and is paced by FrameClock.TurboSpeed rather than running unbounded.
         if (!headless && !paced) FrameClock.Throttle();
         Sdk.LibCd.Tick();
         if (Mem != null) { Bios.BiosB.RefreshPad(Mem); Sdk.LibPad.Refresh(Mem); } //is this correct?
-        Hle.GlBackend.ColorHistFrame();
+        if (onMain) Hle.GlBackend.ColorHistFrame();
         // Play.Tick (RecompOne.Runtime.Play) MUST run before FrameHook, and both MUST run
         // before this function returns: Controller.State written here is what the
         // recompiled game reads back the next time it samples the pad, which can happen

@@ -38,7 +38,11 @@ public sealed class Dma
             _dicr |= 0x80000000u;
     }
 
-    public void Run(int channel, uint madr, uint bcr, uint chcr)
+    /// <summary>Moves the data. Returns true when a completion interrupt is owed — the
+    /// caller raises it with <see cref="Complete"/> AFTER it has cleared CHCR's busy bit,
+    /// because a completion handler that polls "is this channel still busy" must not see
+    /// the transfer it is being told about still running.</summary>
+    public bool Run(int channel, uint madr, uint bcr, uint chcr)
     {
         Log.Dma($"ch{channel} madr=0x{madr:X8} bcr=0x{bcr:X8} chcr=0x{chcr:X8}");
         if ((uint)channel < 7u) Runs[channel]++;
@@ -50,9 +54,9 @@ public sealed class Dma
             case 3: TransferCd(madr, bcr); break;
             case 4: TransferSpu(madr, bcr, chcr); break;
             case 6: ClearOrderingTable(madr, bcr); break;
-            default: return;
+            default: return false;
         }
-        Complete(channel);
+        return true;
     }
 
     void TransferMdecIn(uint madr, uint bcr)
@@ -65,6 +69,7 @@ public sealed class Dma
     void TransferMdecOut(uint madr, uint bcr)
     {
         uint words = WordCount(bcr);
+        if (Log.MdecOn) Log.Mdec($"ch1 drain madr=0x{madr:X8} words={words} outAvail={_mdec.OutCount}");
         var data = new uint[words];
         for (uint i = 0; i < words; i++) data[i] = _mdec.ReadData();
         for (uint i = 0; i < words; i++) _mem.WriteU32(madr + i * 4u, data[i]);
@@ -138,7 +143,7 @@ public sealed class Dma
         _mem.WriteU32(addr, 0x00FFFFFFu);
     }
 
-    void Complete(int channel)
+    public void Complete(int channel)
     {
         bool master = (_dicr & (1u << 23)) != 0;
         bool enabled = (_dicr & (1u << (16 + channel))) != 0;

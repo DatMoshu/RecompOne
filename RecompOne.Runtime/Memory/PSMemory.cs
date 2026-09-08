@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using RecompOne.Runtime.Cdrom;
 using RecompOne.Runtime.Hardware;
 
@@ -230,8 +230,30 @@ public sealed class PSMemory : IMemory
         if (phys == 0x1F8010F4u) { _dma.WriteDicr(value); return; }
         if (IsDmaChcr(phys) && (value & 0x01000000u) != 0)
         {
-            Hw32(phys, value & ~0x01000000u);
-            _dma.Run((int)((phys - 0x1F801080u) / 0x10u), Hw32(phys - 8u), Hw32(phys - 4u), value);
+            // Hardware holds the Start/Busy bit (24) SET for the whole transfer and clears
+            // it on completion. Ours completes synchronously inside this write, so the bit
+            // must be PUBLISHED while Run executes rather than cleared up front: libgpu's
+            // _exeque begins "if this DMA channel is still busy, return", and that is its
+            // only guard against re-entry. With the bit never observable, a queued handler
+            // that kicks the next transfer re-enters _exeque, dispatches the same node a
+            // second time, and walks the ring's consumer past its producer onto a null
+            // handler. (Dino Crisis reads this CHCR through the pointer at 0x800B0F8C.)
+            // Only a read taken DURING a transfer can see the difference, so this is inert
+            // for any game that does not re-enter.
+            //
+            // The busy window covers the TRANSFER ONLY. The completion interrupt is raised
+            // after the bit is cleared, because a game's DMA-complete callback may poll this
+            // same register to decide the transfer has landed. PE1's libpress does exactly
+            // that: its DMA1 callback calls MDEC_out_sync (0x8010C39C), which spins on CHCR
+            // bit 24 and, on timeout, writes 0x80000000 to the MDEC control port -- a reset
+            // that throws away the rest of the decoded picture. Raising the IRQ inside the
+            // busy window cost 19 of every 20 strips of the FMV and rendered it black.
+            int ch = (int)((phys - 0x1F801080u) / 0x10u);
+            bool owed;
+            Hw32(phys, value | 0x01000000u);
+            try { owed = _dma.Run(ch, Hw32(phys - 8u), Hw32(phys - 4u), value); }
+            finally { Hw32(phys, value & ~0x01000000u); }
+            if (owed) _dma.Complete(ch);
             return;
         }
         if (_cd != null && IsCd(phys)) { _cd.Write(phys, (byte)value); return; }

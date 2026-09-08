@@ -195,6 +195,7 @@ public sealed class GlBackend : IGpuBackend
 
     void Writeback(GlDisplayRt rt)
     {
+        if (RtDebug) Console.WriteLine($"[RT] Writeback rt=({rt.X},{rt.Y},{rt.W},{rt.H}) -> vram");
         int s = GlVram.Scale;
         _gl.Disable(EnableCap.ScissorTest);
         _gl.BindFramebuffer(FramebufferTarget.ReadFramebuffer, rt.Fbo);
@@ -437,6 +438,12 @@ public sealed class GlBackend : IGpuBackend
 
     public void WriteVram(int x, int y, int w, int h, ReadOnlySpan<ushort> px)
     {
+        if (RtDebug)
+        {
+            int nz = 0;
+            for (int i = 0; i < px.Length; i++) if (px[i] != 0) nz++;
+            Console.WriteLine($"[RT] WriteVram ({x},{y},{w},{h}) nonZero={nz}/{px.Length}");
+        }
         Flush();
         _vram.WriteRect(x, y, w, h, px);
         SyncRtsFromVram(x, y, w, h);

@@ -271,6 +271,7 @@ internal static class HostWindow
         PanelManager.Register(new SavestatePanel());
         PanelManager.Register(new AssetViewerPanel());
         PanelManager.Register(new ModsPanel());
+        PanelManager.Register(new SpeedrunPanel());
         PanelManager.Register(new LogPanel());
         PanelManager.Register(new SettingsPopup());
         PanelManager.Register(new AboutPopup());

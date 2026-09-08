@@ -126,6 +126,9 @@ public static class Savestate
         return ms.ToArray();
     }
 
+    /// <summary>Number of savestate loads applied this session (see Restore).</summary>
+    public static long LoadCount;
+
     public static void Restore(byte[] data, CpuContext c)
     {
         using var ms = new MemoryStream(data);
@@ -138,6 +141,11 @@ public static class Savestate
         // Restore's job is to deserialize, and the accept/refuse/force policy lives in
         // Play.StateLoad where the user's --loadstate-force can reach it.
         if (ver >= 3) r.ReadString();
+
+        // Counts restores that actually got as far as touching machine state. Read by
+        // Host.Speedrun to flag a run as savestate-assisted -- kept as a plain counter
+        // here so Savestate does not have to know Speedrun exists.
+        LoadCount++;
 
         c.LoadState(r);
         ((PSMemory)Runtime.Mem!).LoadState(r);

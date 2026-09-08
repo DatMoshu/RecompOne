@@ -1,4 +1,4 @@
-using RecompOne.Runtime.Bios;
+﻿using RecompOne.Runtime.Bios;
 using RecompOne.Runtime.Dispatch;
 using RecompOne.Runtime.Memory;
 
@@ -32,6 +32,9 @@ public sealed class CdController
     private int _dataFifoPos;
     private bool _dataReady;
     private bool _reading;
+    /// <summary>CD-DA playback requested by CdlPlay(0x03). Only that command sets it, so
+    /// every port that never plays redbook audio sees the previous status byte exactly.</summary>
+    private bool _playing;
     private bool _streamPending;
     private byte _lastIrq;
 
@@ -119,12 +122,14 @@ public sealed class CdController
                 break;
             case 0x08: //Stop
                 _reading = false;
+                _playing = false;
                 _streamPending = false;
                 QueueIrq(3, [DriveStatus()]);
                 QueueIrq(2, [DriveStatus()]);
                 break;
             case 0x09: // Pause
                 _reading = false;
+                _playing = false;
                 _streamPending = false;
                 QueueIrq(3, [DriveStatus()]);
                 QueueIrq(2, [DriveStatus()]);
@@ -171,6 +176,56 @@ public sealed class CdController
             case 0x1B: // ReadS (streaming): fresh XA audio pipeline per stream
                 if (PSMemory.HwIrqModel) XaAudio.Reset();
                 StartRead();
+                break;
+            case 0x03: // Play — start CD-DA playback of a redbook audio track.
+                // Unimplemented, this hit the default INT5 branch and Dino Crisis retried it
+                // forever (it wants track 2 for its title music), the third instance of the
+                // retry trap documented on 0x0D. An optional BCD track parameter selects the
+                // track; with none, playback resumes from the last Setloc.
+                // HONEST LIMIT: this makes the drive REPORT playback so the caller proceeds.
+                // No audio is produced — the redbook track is not fed to the mixer, which is
+                // a separate piece of work (CdController has no CD-DA sample path at all).
+                if (prms.Count >= 1 && BcdToInt(prms[0]) > 0)
+                {
+                    var (pm, ps_, pf) = _fs.TrackStartMsf(BcdToInt(prms[0]));
+                    _seekLba = (pm * 60 + ps_) * 75 + pf - 150;
+                }
+                _reading = false;
+                _playing = true;
+                QueueIrq(3, [DriveStatus()]);
+                break;
+            case 0x19: // Test — sub-function selected by the first parameter.
+                // Another instance of the retry trap: unhandled, it answered INT5 and Dino
+                // Crisis reissued it once per frame forever. 0x20 is the one sub-function
+                // games actually depend on (drive firmware date/version); everything else
+                // gets a plain status ack rather than an error, because an unknown SUB-command
+                // is not an invalid command and must not restart the retry loop.
+                if (prms.Count >= 1 && prms[0] == 0x20)
+                    QueueIrq(3, [0x94, 0x09, 0x19, 0xC0]);
+                else
+                    QueueIrq(3, [DriveStatus()]);
+                break;
+            case 0x1A: // GetID — disc identity and region licence, ack then result.
+                // Same INT5 trap as 0x0D/0x1E: unimplemented, a retrying caller spins.
+                // Byte 1 = 0 (licensed, not denied), byte 2 = 0x20 (data disc), then the
+                // four licence characters. NOTE: hardcoded SCEA (NTSC-U) — the runtime has
+                // no region field today and no currently mapped game but Dino Crisis (USA)
+                // sends this. A PAL (SCEE) or NTSC-J (SCEI) port must make this a property
+                // of the mounted disc rather than a constant.
+                QueueIrq(3, [DriveStatus()]);
+                QueueIrq(2, [DriveStatus(), 0x00, 0x20, 0x00,
+                             (byte)'S', (byte)'C', (byte)'E', (byte)'A']);
+                break;
+            case 0x1E: // ReadTOC — re-read the table of contents from the lead-in.
+                // Unimplemented, this fell through to the default INT5 (error) branch, which
+                // is the same trap documented on 0x0D above: libcd's CdControl returns 0 on
+                // INT5, so a caller that retries once per frame never advances and the stall
+                // surfaces far away from the CD. Dino Crisis issues this at boot and retries
+                // it indefinitely. Our TOC comes from the cue at mount time and cannot go
+                // stale, so there is genuinely nothing to re-read: ack, then complete, which
+                // is what the drive does. Unreachable for a game that never sends 0x1E.
+                QueueIrq(3, [DriveStatus()]);
+                QueueIrq(2, [DriveStatus()]);
                 break;
             default:
                 Console.WriteLine($"[CD] command 0x{cmd:X2} is unknow");
@@ -473,7 +528,8 @@ public sealed class CdController
 
     // Bit 0x20 = reading (libcd's CdRead pauses a busy drive before re-issuing);
     // only reported under the hardware-IRQ model so legacy HLE paths stay identical.
-    private byte DriveStatus() => (byte)(0x02 | (_reading && PSMemory.HwIrqModel ? 0x20 : 0) | ShellStatusBits());
+    private byte DriveStatus() => (byte)(0x02 | (_reading && PSMemory.HwIrqModel ? 0x20 : 0)
+                                             | (_playing ? 0x80 : 0) | ShellStatusBits());
 
     private static byte ToBcd(int v) => (byte)(((v / 10) << 4) | (v % 10));
     private static int BcdToInt(byte v) => (v >> 4) * 10 + (v & 0xF);

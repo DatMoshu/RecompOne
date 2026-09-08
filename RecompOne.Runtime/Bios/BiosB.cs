@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using RecompOne.Runtime.Context;
 using RecompOne.Runtime.Memory;
 
@@ -44,7 +44,14 @@ public static class BiosB
         public Thread? Native;
         public uint Pc, Sp, Gp;
         public bool Started, Exited;
+        /// <summary>CloseTh retired this thread while its CLR thread was still live.
+        /// It must unwind at its next park rather than ever being resumed.</summary>
+        public bool SelfClosed;
     }
+
+    /// <summary>Thrown inside a BIOS thread that has been closed, to unwind its emulated
+    /// call stack. Private control flow, never surfaced to a port.</summary>
+    sealed class ThreadClosedSignal : Exception;
 
     static readonly ThreadSlot[] _slots = CreateSlots();
     static ThreadSlot[] CreateSlots()
@@ -71,8 +78,6 @@ public static class BiosB
         _current = MainSlot;
     }
 
-    public static bool OnMainThread => Environment.CurrentManagedThreadId == _mainManagedId;
-
     /// <summary>Diagnostic view of the BIOS thread slots. Read-only; no behaviour change.</summary>
     public static string DescribeThreads()
     {
@@ -83,7 +88,8 @@ public static class BiosB
             var s = _slots[i];
             if (!_tcbs[i].Used && !s.Started && s.Pc == 0) continue;
             sb.Append($" [{i}] pc=0x{s.Pc:X8} used={(_tcbs[i].Used ? 1 : 0)} started={(s.Started ? 1 : 0)} " +
-                      $"exited={(s.Exited ? 1 : 0)} gate={s.Gate.CurrentCount} alive={(s.Native?.IsAlive == true ? 1 : 0)};");
+                      $"exited={(s.Exited ? 1 : 0)} closed={(s.SelfClosed ? 1 : 0)} " +
+                      $"gate={s.Gate.CurrentCount} alive={(s.Native?.IsAlive == true ? 1 : 0)};");
         }
         return sb.ToString();
     }
@@ -92,9 +98,15 @@ public static class BiosB
     /// presentation, since the GL context is thread-affine. Cheap no-op unless the thread
     /// model is on. Fails immediately and by name rather than corrupting GL state, which
     /// would surface later as inexplicable rendering garbage.</summary>
+    /// <summary>False only when the BIOS thread model is on AND emulated code is currently
+    /// running on a game thread rather than the original one. Callers that touch the GL
+    /// context or the window must check this; everything else in a frame is thread-agnostic,
+    /// because the baton guarantees exactly one thread runs emulated code at a time.</summary>
+    public static bool OnMainThread => !ThreadModel || Environment.CurrentManagedThreadId == _mainManagedId;
+
     public static void AssertMainThread(string what)
     {
-        if (!ThreadModel || OnMainThread) return;
+        if (OnMainThread) return;   // OnMainThread is true for everything when the model is off
         throw new InvalidOperationException(
             $"BIOS-thread violation: '{what}' ran on BIOS thread slot {CurrentSlotOf(Environment.CurrentManagedThreadId)} " +
             $"(managed id {Environment.CurrentManagedThreadId}), but it is pinned to the main thread " +
@@ -154,11 +166,20 @@ public static class BiosB
         // fail when nothing at all has progressed for the timeout. (A flat per-wait
         // timeout killed healthy long sleeps -- it fired on Dino Crisis's module thread
         // while main was happily rendering at 60 fps.)
+        // A thread that has been closed is DEAD on hardware -- its stack is gone and it
+        // can never be resumed -- so unwind out of the emulated call stack rather than
+        // queueing for a baton that now belongs to whoever inherited this slot.
+        if (s.SelfClosed) throw new ThreadClosedSignal();
         long lastFrame = Runtime.FrameCount;
         int stalledMs = 0;
         while (true)
         {
-            if (s.Gate.Wait(250)) { if (_shutdown) ExitThread(slot); return; }
+            if (s.Gate.Wait(250))
+            {
+                if (_shutdown) ExitThread(slot);
+                else if (s.SelfClosed) throw new ThreadClosedSignal();
+                return;
+            }
             if (_shutdown) return;
             long now = Runtime.FrameCount;
             if (now != lastFrame) { lastFrame = now; stalledMs = 0; continue; }
@@ -186,6 +207,14 @@ public static class BiosB
                 var tc = new CpuContext { SP = s.Sp, GP = s.Gp, RA = 0u };
                 Dispatch.Dispatcher.Call(tc, m, s.Pc);
             }
+            catch (ThreadClosedSignal)
+            {
+                // CloseTh retired this thread while it was switching away. That switch
+                // already handed the baton on, so retire QUIETLY -- releasing main's gate
+                // here would double-release it and corrupt the handoff.
+                ExitThread(slot, quiet: true);
+                return;
+            }
             catch (Exception ex) when (!_shutdown)
             {
                 Console.WriteLine($"[bios] thread slot {slot} (pc 0x{s.Pc:X8}) faulted: {ex}");
@@ -199,12 +228,13 @@ public static class BiosB
     /// <summary>A BIOS thread entry point returned (or the process is going down). Retire the
     /// slot and hand control back to main so the game does not park forever waiting on a
     /// thread that no longer exists.</summary>
-    static void ExitThread(int slot)
+    static void ExitThread(int slot, bool quiet = false)
     {
         var s = _slots[slot];
         s.Exited = true;
+        s.SelfClosed = false;
         _tcbs[slot] = default;
-        if (_shutdown) return;
+        if (_shutdown || quiet) return;
         _current = MainSlot;
         try { _slots[MainSlot].Gate.Release(); } catch (SemaphoreFullException) { }
     }
@@ -520,12 +550,16 @@ public static class BiosB
         for (int i = first; i < MaxThreads; i++)
         {
             if (_tcbs[i].Used) continue;
+            // A slot whose CLR thread has not actually unwound yet is NOT free, even
+            // once its TCB is retired: handing it out would put two threads on one
+            // gate, and the stale one -- queued first -- would steal the next baton.
+            if (ThreadModel && !_slots[i].Exited && _slots[i].Native is { IsAlive: true }) continue;
             _tcbs[i] = new TCB { Used = true };
             if (ThreadModel)
             {
                 var s = _slots[i];
                 s.Pc = pc; s.Sp = spFp; s.Gp = gp;
-                s.Started = false; s.Exited = false; s.Native = null;
+                s.Started = false; s.Exited = false; s.SelfClosed = false; s.Native = null;
                 while (s.Gate.CurrentCount > 0) s.Gate.Wait(0);   // reuse a recycled slot cleanly
                 Log.Bios($"OpenTh -> slot {i} pc=0x{pc:X8} sp=0x{spFp:X8} gp=0x{gp:X8}");
             }
@@ -540,9 +574,23 @@ public static class BiosB
         if (ThreadModel && i != MainSlot)
         {
             var s = _slots[i];
+            if (s.Started && !s.Exited)
+            {
+                // The thread is LIVE -- normally it is closing ITSELF, the convention a
+                // one-shot task uses to hand its scheduler slot to a successor and switch
+                // away (Dino Crisis's module loader at 0x80020868 does exactly this). Its
+                // CLR thread still owns an emulated call stack, so the slot must NOT be
+                // recycled here: OpenTh would hand the same slot -- and the same gate --
+                // to the successor, and this thread, queued first, would take the next
+                // baton and run the code after its own switch, which is unreachable on
+                // real hardware. Mark it instead and let it unwind at its next park;
+                // ExitThread frees the TCB once the CLR thread is genuinely gone.
+                s.SelfClosed = true;
+                if (i != _current)
+                    try { s.Gate.Release(); } catch (SemaphoreFullException) { }
+                return;
+            }
             s.Exited = true;
-            // The thread is parked inside Park(); releasing it while _shutdown is false
-            // would resume dead emulated code, so only wake it if it never started.
             if (!s.Started) s.Native = null;
         }
         _tcbs[i] = default;

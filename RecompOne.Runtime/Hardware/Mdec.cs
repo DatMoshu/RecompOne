@@ -68,10 +68,13 @@ public sealed class Mdec
 
     public bool OutEmpty => _out.Count == 0;
 
+    public int OutCount => _out.Count;
+
     public void WriteControl(uint value)
     {
         if ((value & (1u << 31)) != 0)
         {
+            if (Log.MdecOn) Log.Mdec($"reset (control bit31) discarding {_out.Count} queued words");
             _mode = Mode.Idle;
             _paramsRemaining = -1;
             _inHalfwords.Clear();
@@ -194,7 +197,15 @@ public sealed class Mdec
                 mbCount++;
             }
         }
-        Log.Mdec($"decode depth={_depth} signed={_signed} bit15={_bit15} inHW={_inHalfwords.Count} consumedHW={_readPos} mbs={mbCount} wordsOut={_out.Count - mbStart} outTotal={_out.Count}");
+        if (Log.MdecOn)
+        {
+            // Is the decoded picture actually a picture? "words were produced" and "those
+            // words are not all zero" are different claims, and a fully black frame satisfies
+            // the first while looking identical on screen to a decoder that produced nothing.
+            int nonZero = 0;
+            foreach (var wv in _out) if (wv != 0) nonZero++;
+            Log.Mdec($"decode depth={_depth} signed={_signed} bit15={_bit15} inHW={_inHalfwords.Count} consumedHW={_readPos} mbs={mbCount} wordsOut={_out.Count - mbStart} outTotal={_out.Count} nonZero={nonZero}");
+        }
     }
 
     ushort NextHalfword() => _readPos < _inHalfwords.Count ? _inHalfwords[_readPos++] : (ushort)0xFE00;

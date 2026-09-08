@@ -69,6 +69,29 @@ public static class LibEtc
         c.V0 = 0;
     }
 
+    /// <summary>Present one frame and count one vblank, for a port that must WAIT somewhere
+    /// other than inside VSync.
+    ///
+    /// This exists for a deadlock class that is structural to this engine, not a bug in any
+    /// one game. Interrupts are delivered from Runtime.PresentFrame, which fires only from
+    /// VSync -- so game code that busy-waits on a flag its own interrupt handler is the only
+    /// writer of can never make progress, and because the pump is also what services the OS
+    /// message queue, the whole window stops responding. Brave Fencer Musashi's blocking
+    /// card-sync does exactly that: it spins on 0x80078C88, whose sole non-zero writer is a
+    /// callback reachable only through the interrupt dispatch table.
+    ///
+    /// Declines (returning false) while an interrupt is being delivered -- presenting there
+    /// re-enters the very handler chain that is still unwinding, which is what nested
+    /// libcdstream's ready callback one level per sector until the stack was gone. A caller
+    /// that gets false must give up rather than spin, or it has recreated the hang.</summary>
+    public static bool PumpOneFrame()
+    {
+        if (Interrupts.InDeliver) return false;
+        Runtime.PresentFrame();
+        Advance(_pollClock.Elapsed.TotalMilliseconds);
+        return true;
+    }
+
     // One vblank has now been consumed, whichever path produced it. Both the blocking wait
     // and the VSync(-1) poll gate go through here so a game that does both (Brave Fencer
     // Musashi polls, then blocks once it reaches the title) still advances at 60 Hz overall

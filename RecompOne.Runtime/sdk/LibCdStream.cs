@@ -13,7 +13,7 @@ public static class LibCdStream
     public static bool InUse { get; private set; }
     public static int MaxFrame;
     public static int EnqMaxFrame;              // highest STR frame# delivered (end detection)
-    public static void ForceStop() { _active = false; _reading = false; MaxFrame = 0; }
+    public static void ForceStop() { _active = false; _reading = false; MaxFrame = 0; _skipToEnd = false; }
     static uint _statusBase;
     static int _slots;
     static uint _dataBase;
@@ -88,6 +88,88 @@ public static class LibCdStream
     // (it treats a frame# that drops below the running max as the last frame).
     static int _skip;
     const int SkipLimit = 200;
+
+    // ---- Skip to the end of the cinematic -------------------------------------------
+    // A cutscene skip that fast-forwards has to DECODE every frame it skips, and the
+    // measurement in CLAUDE.md says that decode is the bound (~2.7x, the CD producer idle
+    // and always ahead). Seeking is the way out: the video frames the player will never
+    // see do not have to be delivered at all.
+    //
+    // This does NOT invent an ending. It moves the read cursor to the LAST video frame in
+    // the stream and then lets the existing end-of-stream path run untouched: the producer
+    // delivers that final frame, runs into the non-video tail, MaybeLoop wraps the cursor
+    // back to the start, the frame number drops below the running max, and the game's own
+    // player sees exactly the "last frame" condition it always sees. Same trigger, same
+    // code, reached in milliseconds instead of half a minute.
+    //
+    // The seek is a header-only scan -- it reads sector sub-headers and never decodes -- so
+    // the cost is a few thousand cached sector reads.
+    //
+    // Inert unless something calls SkipToEnd(); nothing in the engine does.
+    static volatile bool _skipToEnd;
+    public static int LastSeekScanned, LastSeekFrom, LastSeekTo;
+
+    /// <summary>Ask the stream to jump to its final video frame. Honoured by the producer
+    /// thread at the top of its next iteration (it owns _streamLba; setting that from
+    /// another thread would race with a read in flight). Returns false if no stream is
+    /// running, so a caller can say "nothing to skip" rather than silently doing nothing.</summary>
+    public static bool SkipToEnd()
+    {
+        if (!InUse || !_active) return false;
+        _skipToEnd = true;
+        return true;
+    }
+
+    // Scan forward for the last sector that STARTS a video frame, mirroring the producer's
+    // own accept/reject tests so the two cannot disagree about what a frame is. Stops at the
+    // same SkipLimit run of non-video sectors that MaybeLoop uses to recognise the end.
+    static void SeekToLastFrame(Cdrom.CdController cd)
+    {
+        int from = _streamLba, lba = _streamLba, lastStart = -1, miss = 0, scanned = 0;
+        int firstFno = -1, lastFno = -1, maxFno = -1;
+        const int MaxScan = 400000; // a hard stop: a malformed stream must not spin this thread
+        while (scanned < MaxScan)
+        {
+            byte[] sec;
+            try { lock (LibCd.DiscLock) sec = cd.ReadSectorData(lba, 2336); }
+            catch { break; } // ran off the disc; whatever we found before it is the end
+            scanned++;
+
+            int n = Read16(sec, 14);
+            bool frameStart = Read16(sec, 8) == VideoMagic && Read16(sec, 12) == 0 && n > 0 && n <= _slots;
+            if (frameStart)
+            {
+                // Offset 16 is the STR frame number (CollectFrame copies sec[8..40] verbatim
+                // into the ring header, and end-of-cinematic reads that header at +8). Within
+                // one movie it climbs; the NEXT movie packed after it on disc restarts at 1.
+                // That drop is the movie boundary -- the very signal the game ends on -- so
+                // stop there. Without this the scan runs straight through into whatever STR
+                // follows and seeks to a frame belonging to a different cinematic.
+                int fno = Read16(sec, 16);
+                if (firstFno < 0) firstFno = fno;
+                if (maxFno >= 0 && fno < maxFno) break;
+                if (fno > maxFno) maxFno = fno;
+                lastFno = fno;
+                lastStart = lba;
+                miss = 0;
+            }
+            else if (++miss >= SkipLimit) break;
+            lba++;
+        }
+        LastSeekScanned = scanned; LastSeekFrom = from; LastSeekTo = lastStart;
+        if (lastStart < 0)
+        {
+            Console.WriteLine($"[stream] skip-to-end found no further video frame in {scanned} sectors from {from}; leaving the stream alone");
+            return;
+        }
+        _streamLba = lastStart;
+        _skip = 0;
+        // Everything queued in the XA decoder is the soundtrack of the part we just jumped
+        // over. Left to play out it is heard as a second of garble after the cinematic ends.
+        XaAudio.Flush();
+        Console.WriteLine($"[stream] skip-to-end: lba {from} -> {lastStart} ({lastStart - from} sectors skipped, " +
+                          $"{scanned} scanned, frame {firstFno} -> {lastFno})");
+    }
     static void MaybeLoop()
     {
         if (_skip < SkipLimit || _streamStartLba < 0) return;
@@ -202,6 +284,10 @@ public static class LibCdStream
                 _streamStartLba = _streamLba;
                 _clock.Restart();
             }
+
+            // Honoured here, on the thread that owns _streamLba, and only once the cursor is
+            // valid -- so a skip requested before the stream has picked a start still lands.
+            if (_skipToEnd) { _skipToEnd = false; SeekToLastFrame(cd); }
 
             byte[] sec;
             try { lock (LibCd.DiscLock) sec = cd.ReadSectorData(_streamLba, 2336); }
