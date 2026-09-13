@@ -68,6 +68,13 @@ public static class Runtime
     /// Non-zero is normal for a game whose tasks call VSync; it only matters if main stops
     /// presenting entirely, which would show as a frozen picture on a running game.</summary>
     public static long OffThreadPresents;
+
+    /// <summary>Loudest sample the host mixer has sent to the audio device, and the number of
+    /// buffers mixed. Host.Audio is internal, so a game host reads its silence diagnostics
+    /// here. Peak 0 with buffers climbing means the game is mixing silence; buffers stuck at
+    /// 0 means the mixer never ran.</summary>
+    public static int AudioPeak;
+    public static long AudioBuffers;
     static bool _offThreadReported;
 
     static void NoteOffThreadPresent()
@@ -136,6 +143,8 @@ public static class Runtime
         // gating it on `drew` instead silently loses most captures during a fast-forward.
         if (!headless && onMain) Host.CaptureManager.Tick(FrameCount); // --snap-window / --dump (engine-level, off by default); reads VRAM through the backend, so main only
         if (!headless) Audio.Attach(Spu);
+        AudioPeak = Host.Audio.MixPeak;
+        AudioBuffers = Host.Audio.MixedBuffers;
         Audio.Suppressed = headless || (Host.Tas.TurboActive && Audio.MuteWhileFast);
         Host.Tas.Tick();          // apply replay input / capture record input for this frame
         Host.AutoState.Tick(FrameCount); // raise a periodic savestate request (the game host decides if it's safe)

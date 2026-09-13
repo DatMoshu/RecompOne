@@ -495,6 +495,12 @@ public static class OverlayWriter
                     case "post":
                         func.PostHookTarget = patch.Target;
                         break;
+                    // Keeps the original body and records what it does. Deliberately takes no
+                    // target: unlike the other modes this one adds an observer, not a
+                    // replacement, so there is nothing for the config to point at.
+                    case "verify":
+                        func.IsVerify = true;
+                        break;
                     default:
                         func.IsPatch = true;
                         func.PatchTarget = patch.Target;

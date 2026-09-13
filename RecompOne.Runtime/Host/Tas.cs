@@ -1,4 +1,4 @@
-using RecompOne.Runtime.Hardware;
+﻿using RecompOne.Runtime.Hardware;
 
 namespace RecompOne.Runtime.Host;
 
@@ -78,6 +78,7 @@ public static class Tas
         _rec.AppendLine("# PE1 TAS input record: <frame> <state hex, active-low> <leftX> <leftY>");
         Recording = true;
         _lastHeartbeatFrame = Frame;
+        Console.WriteLine($"[tas] recording input to {path}");
     }
 
     public static void StartReplay(string path)
@@ -95,6 +96,12 @@ public static class Tas
             _play.Add((f, st, lx, ly));
         }
         Playing = _play.Count > 0;
+        // Say so. A replay that silently loaded nothing -- an empty file, or one whose only
+        // lines are comments -- is indistinguishable from a normal launch, and the run then
+        // gets read as "the recording did not reproduce it" rather than "no input was fed".
+        Console.WriteLine(Playing
+            ? $"[tas] replaying {_play.Count} input keyframes from {path} (last at frame {_play[^1].f})"
+            : $"[tas] replay file {path} has no input keyframes; running with live input");
     }
 
     // Once per presented frame, from PresentFrame. On replay this sets the pad for

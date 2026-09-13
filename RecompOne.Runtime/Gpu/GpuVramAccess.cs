@@ -49,6 +49,22 @@ public sealed partial class Gpu
     /// after the characters so they occlude them.</summary>
     public static Action? OnTriangleDrawn;
 
+    /// <summary>One rasterised primitive with everything a per-frame effect census needs: the
+    /// bounding rect (a triangle's is its bbox), the first vertex's UV, the texture page, CLUT,
+    /// the page's blend mode (bits 5-6 of the tpage: 0 = 50/50, 1 = additive, 2 = subtractive,
+    /// 3 = B + F/4), whether the primitive asked for semi-transparency, and its first colour.
+    /// <see cref="OnRectDrawn"/>/<see cref="OnTriangleDrawn"/> deliberately carry less; this
+    /// exists for the effect harvest (PE1 --gfx-trace) which has to tell "an additive 32x32 on
+    /// the effect page" from "a room sprite" without a screenshot. Null unless something asked.</summary>
+    public readonly record struct DrawnPrim(bool IsRect, int X, int Y, int W, int H, int U, int V,
+        bool Textured, bool Semi, ushort TPage, ushort Clut, byte R, byte G, byte B)
+    {
+        public int Blend => (TPage >> 5) & 3;
+    }
+
+    /// <summary>Fired after each rectangle or triangle is rasterised (after the narrower hooks).</summary>
+    public static Action<DrawnPrim>? OnPrimDrawn;
+
     /// <summary>Read a rect of VRAM into <paramref name="dst"/> (row-major, w*h halfwords),
     /// from whichever store is authoritative for this backend. Coordinates wrap like the
     /// real GPU's addressing.</summary>

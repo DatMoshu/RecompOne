@@ -50,6 +50,12 @@ public sealed partial class Gpu
         // painted once it has been painted. No-op unless something is listening.
         if (GteCapture.Enabled) GteCapture.AfterTriangleDrawn();
         OnTriangleDrawn?.Invoke();
+        if (OnPrimDrawn != null)
+        {
+            int x0 = Math.Min(a.X, Math.Min(b.X, c.X)), y0 = Math.Min(a.Y, Math.Min(b.Y, c.Y));
+            OnPrimDrawn(new DrawnPrim(false, x0, y0, spanX + 1, spanY + 1, a.U, a.V, tex, semi,
+                (ushort)CurTPage(), (ushort)clut, (byte)a.R, (byte)a.G, (byte)a.B));
+        }
     }
 
     void HleRect(int x, int y, int w, int h, int u, int v, int clut, int r, int g, int b, bool tex, bool semi, bool raw)
@@ -61,6 +67,8 @@ public sealed partial class Gpu
         // Sprites are the third path a backdrop can reach the framebuffer by, and the one no
         // GTE-correlating capture can see. See Gpu/GpuVramAccess.cs. Null unless something asked.
         OnRectDrawn?.Invoke(x, y, w, h, tex, (ushort)CurTPage(), (ushort)clut);
+        OnPrimDrawn?.Invoke(new DrawnPrim(true, x, y, w, h, u, v, tex, semi,
+            (ushort)CurTPage(), (ushort)clut, (byte)r, (byte)g, (byte)b));
     }
 
     void HleLine(int x0, int y0, int r0, int g0, int b0, int x1, int y1, int r1, int g1, int b1, bool semi)

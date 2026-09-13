@@ -35,6 +35,18 @@ public static class FunctionEmitter
             sb.AppendLine($"    public static void {name}(CpuContext c, IMemory m) => {func.PatchTarget}(c, m);");
             return sb.ToString();
         }
+        // Verified function: the PUBLIC name becomes a gate into the oracle and the real body
+        // moves to a private name. Every existing call site -- including the direct static calls
+        // the emitter uses within an overlay, which never touch the dispatcher -- routes through
+        // it with no change at the call site. The delegate is cached in a static field so a
+        // gated call allocates nothing.
+        if (func.IsVerify)
+        {
+            sb.AppendLine($"    static readonly Action<CpuContext, IMemory> {name}_VD = {name}_V;");
+            sb.AppendLine($"    public static void {name}(CpuContext c, IMemory m)");
+            sb.AppendLine($"        => RecompOne.Runtime.Verify.Oracle.Gate(0x{func.Start:X8}u, c, m, {name}_VD);");
+            name += "_V";
+        }
         if (func.PostHookTarget.Length > 0)
         {
             sb.AppendLine($"    public static void {name}(CpuContext c, IMemory m)");

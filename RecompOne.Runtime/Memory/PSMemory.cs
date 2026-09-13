@@ -32,6 +32,16 @@ public sealed class PSMemory : IMemory
     public uint IrqStat => _iStat;
     public uint IrqMask => _iMask;
 
+    // I_MASK as the GAME last wrote it, in either interrupt model. Under HwIrqModel that is
+    // the modelled register; under the legacy BIOS-HLE model an I_MASK write falls through
+    // to the raw hardware-register cell, so it is still there to read. A game whose graphics
+    // library masks interrupts around a critical section (libgpu's _exeque) needs the legacy
+    // delivery path to see this too -- see Interrupts.MaskGatesBiosModel.
+    // GuestMaskWritten gates that: before the game's first write the cell reads 0, and
+    // treating that as "everything masked" would suppress VBLANK for the whole boot.
+    public bool GuestMaskWritten { get; private set; }
+    public uint GuestIrqMask => HwIrqModel ? _iMask : Hw32(0x1F801074u);
+
     public ReadOnlySpan<byte> Ram => _ram;
     internal byte[] RamBuffer => _ram;
 
@@ -192,6 +202,16 @@ public sealed class PSMemory : IMemory
         var s = Resolve(address, 2);
         s[0] = (byte)value;
         s[1] = (byte)(value >> 8);
+        // libgpu writes I_MASK as a HALFWORD (`sh a0,0(v1)`), so the 16-bit path has to
+        // notice it too -- gating only the 32-bit store would miss every _exeque critical
+        // section, which is the only place this matters.
+        if (IsIrqMask(phys)) NoteGuestMaskWrite();
+    }
+
+    void NoteGuestMaskWrite()
+    {
+        GuestMaskWritten = true;
+        Interrupts.OnBiosMaskChanged(this, Runtime.Cpu);
     }
 
     public static bool WatchOn;
@@ -267,6 +287,7 @@ public sealed class PSMemory : IMemory
         s[1] = (byte)(value >> 8);
         s[2] = (byte)(value >> 16);
         s[3] = (byte)(value >> 24);
+        if (IsIrqMask(phys)) NoteGuestMaskWrite();
     }
 
     public uint ReadWordLeft(uint current, uint address)

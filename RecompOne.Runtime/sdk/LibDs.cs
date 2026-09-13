@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using RecompOne.Runtime.Context;
 using RecompOne.Runtime.Dispatch;
 using RecompOne.Runtime.Memory;
@@ -299,6 +299,15 @@ public static class LibDs
     public static void DsReadCallback(CpuContext c, IMemory m) { c.V0 = _cbRead; _cbRead = c.A0; }
     public static void DsDataCallback(CpuContext c, IMemory m) { c.V0 = _cbData; _cbData = c.A0; }
 
+    // CdlSetfilter's operand. An XA stream interleaves many channels into one file and the
+    // filter says which one is audible; libds routes it through here, so a port that decodes
+    // XA anywhere OTHER than CdController (which keeps its own copy) has no other way to
+    // learn it. Dino Crisis multiplexes 32 speech channels into a single file, where
+    // decoding the lot at once is a wall of overlapping voices rather than a line of
+    // dialogue -- and Exec used to drop this command on the floor.
+    public static byte FilterFile, FilterChannel;
+    public static bool FilterSet;
+
     static int Exec(IMemory m, byte com, uint param, uint result)
     {
         _com = com;
@@ -309,6 +318,14 @@ public static class LibDs
         {
             case 0x02: // Setloc
                 if (ValidPtr(param)) _seekLba = ReadLoc(m, param);
+                break;
+            case 0x0D: // Setfilter: CdlFILTER { u8 file, u8 chan, u16 pad }
+                if (ValidPtr(param))
+                {
+                    FilterFile = m.ReadU8(param);
+                    FilterChannel = m.ReadU8(param + 1);
+                    FilterSet = true;
+                }
                 break;
             case 0x0E: // Setmode
                 if (ValidPtr(param)) _mode = m.ReadU8(param);
@@ -363,6 +380,8 @@ public static class LibDs
         _mode = 0;
         _lastIntr = Complete;
         _readActive = false;
+        FilterSet = false;
+        FilterFile = FilterChannel = 0;
         _cbSync = _cbReady = _cbRead = _cbData = 0;
         Array.Clear(_lastResult);
     }

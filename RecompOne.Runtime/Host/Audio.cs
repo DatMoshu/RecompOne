@@ -1,4 +1,4 @@
-using Silk.NET.OpenAL;
+﻿using Silk.NET.OpenAL;
 using ALDevice = Silk.NET.OpenAL.Device;
 using ALCtx = Silk.NET.OpenAL.Context;
 
@@ -71,6 +71,12 @@ internal static unsafe class Audio
     /// looks broken".</summary>
     public static volatile bool Suppressed;
 
+    /// <summary>Loudest sample sent to the device since the last reset, and how many buffers
+    /// have been mixed. Diagnostics for a silent port; no behaviour.</summary>
+    public static volatile int MixPeak;
+    public static long MixedBuffers;
+    public static void ResetMixStats() { MixPeak = 0; MixedBuffers = 0; }
+
     /// <summary>Whether a VISIBLE fast-forward silences audio (a headless one always does).
     /// On by default; the Speed menu exposes it, since some fast-forwards are worth hearing.</summary>
     public static bool MuteWhileFast = true;
@@ -109,6 +115,15 @@ internal static unsafe class Audio
             // skipping it would leave the SPU somewhere different than an unsuppressed run.
             // Zero the result instead -- silence with identical state.
             spu.Mix(_sampleBuf, FramesPerBuffer);
+            // Peak of what actually reaches the device. This is the one measurement that
+            // separates "the game is not making sound" from "the sound is not getting out":
+            // a live SPU with keyed voices can still mix to digital silence (per-voice
+            // volumes at zero, or samples that are silence), and from the outside both
+            // read as "no audio".
+            int peak = 0;
+            foreach (short s in _sampleBuf) { int a = s < 0 ? -s : s; if (a > peak) peak = a; }
+            if (peak > MixPeak) MixPeak = peak;
+            MixedBuffers++;
             if (Suppressed) Array.Clear(_sampleBuf);
 
             _al.BufferData(buf, BufferFormat.Stereo16, _sampleBuf, 44100);

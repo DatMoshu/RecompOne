@@ -1,4 +1,4 @@
-using RecompOne.Runtime.Bios;
+﻿using RecompOne.Runtime.Bios;
 using RecompOne.Runtime.Context;
 using RecompOne.Runtime.Dispatch;
 using RecompOne.Runtime.Memory;
@@ -19,6 +19,32 @@ public static class Interrupts
     static uint _deferred;
     /// <summary>True while a hardware-model IRQ handler is executing (host HLE can suspend frame pacing).</summary>
     public static bool InDeliver => _inDeliver;
+
+    // Legacy BIOS-HLE games that nonetheless mask interrupts around a critical section.
+    // libgpu's _exeque opens with SetIntrMask(0) and closes by restoring it, because its
+    // DMA-queue cursors are not re-entrant; with the mask ignored, the GPU DMA-complete
+    // interrupt is delivered INSIDE the drain, its handler calls _exeque again, and both
+    // levels advance the consumer for one produced node -- so the consumer passes the
+    // producer and the next iteration dispatches a null handler ("unmapped call:
+    // 0x00000000" out of libgpu). Dino Crisis dies at frame 75 that way.
+    // Off by default: PE1/BFM/PE2 are byte-identical with it off, and it only ever
+    // matters for a game that actually writes I_MASK.
+    public static bool MaskGatesBiosModel;
+    static uint _biosDeferred;
+    static bool _inBiosDeliver;
+
+    /// <summary>Re-deliver anything that fell due while the game had it masked. Called from
+    /// PSMemory on every I_MASK write in the legacy model, which is the moment a critical
+    /// section ends.</summary>
+    public static void OnBiosMaskChanged(PSMemory ps, CpuContext? cpu)
+    {
+        if (!MaskGatesBiosModel || cpu == null || _inBiosDeliver) return;
+        uint pend = _biosDeferred & ps.GuestIrqMask;
+        if (pend == 0) return;
+        _biosDeferred &= ~pend;
+        for (int bit = 0; pend != 0 && bit < 11; bit++, pend >>= 1)
+            if ((pend & 1u) != 0) Deliver(bit, cpu, ps);
+    }
 
     public static void OnMaskChanged(PSMemory ps, CpuContext? cpu)
     {
@@ -115,6 +141,31 @@ public static class Interrupts
             finally { _inDeliver = false; }
             return;
         }
+        if (MaskGatesBiosModel && mem is PSMemory bp && bp.GuestMaskWritten)
+        {
+            // Latch rather than drop, exactly as the hardware model does: a source that
+            // came due inside a critical section must still be serviced when it ends.
+            if ((bp.GuestIrqMask & (1u << irq)) == 0 || _inBiosDeliver)
+            {
+                _biosDeferred |= 1u << irq;
+                return;
+            }
+            _inBiosDeliver = true;
+            try
+            {
+                Invoke(irq, cpu, mem);
+                for (int guard = 0; _biosDeferred != 0 && guard < 32; guard++)
+                {
+                    uint pend = _biosDeferred & bp.GuestIrqMask;
+                    _biosDeferred &= ~pend;
+                    if (pend == 0) break;
+                    for (int bit = 0; pend != 0 && bit < 11; bit++, pend >>= 1)
+                        if ((pend & 1u) != 0) Invoke(bit, cpu, mem);
+                }
+            }
+            finally { _inBiosDeliver = false; }
+            return;
+        }
         Invoke(irq, cpu, mem);
     }
 
@@ -123,7 +174,7 @@ public static class Interrupts
     // _inChain likewise; persisting either would let a stale "handler running" flag survive
     // a load and suppress every subsequent interrupt.
     public static void SaveState(BinaryWriter w) => w.Write(_deferred);
-    public static void LoadState(BinaryReader r) { _deferred = r.ReadUInt32(); _inDeliver = false; _inChain = false; }
+    public static void LoadState(BinaryReader r) { _deferred = r.ReadUInt32(); _inDeliver = false; _inChain = false; _inBiosDeliver = false; }
 
     static void Invoke(int irq, CpuContext cpu, IMemory mem)
     {

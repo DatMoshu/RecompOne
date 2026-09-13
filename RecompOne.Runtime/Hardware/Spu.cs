@@ -1,4 +1,4 @@
-using System.IO;
+﻿using System.IO;
 using System.Runtime.CompilerServices;
 
 namespace RecompOne.Runtime;
@@ -248,6 +248,15 @@ public sealed class Spu
         }
     }
 
+    // Diagnostics for "the port is silent". They separate the three places sound dies --
+    // the driver never keys a voice (KeyOns stays 0), it keys voices but the mix is muted
+    // (KeyOns climbs, MainVolume 0), or both are fine and the fault is downstream in the
+    // host audio device. Counters only; no behaviour.
+    public long KeyOns { get; private set; }
+    public int ActiveVoices { get { lock (_sync) { int n = 0; foreach (var v in _v) if (v.Phase != AdsrPhase.Off) n++; return n; } } }
+    public (ushort L, ushort R) MainVolume => (_mainVolL, _mainVolR);
+    public (ushort L, ushort R) CdVolume => (_cdVolL, _cdVolR);
+
     void KeyOn(ushort mask, bool hi)
     {
         int b = hi ? 16 : 0;
@@ -266,6 +275,7 @@ public sealed class Spu
             Array.Clear(v.Ring);
             v.RingPos = 0;
             v.EndX = false;
+            KeyOns++;
             _endx &= ~(1u << (b + i));
         }
     }

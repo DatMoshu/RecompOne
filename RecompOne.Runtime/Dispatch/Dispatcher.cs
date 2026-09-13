@@ -133,7 +133,20 @@ public static class Dispatcher
     }
 
     public static bool TraceGs1;
+
     public static void Call(CpuContext c, IMemory m, uint addr)
+    {
+        // While the differential oracle is recording an invocation, every call that leaves it
+        // through the dispatcher is logged with its arguments and return values, so a recorded
+        // sample can later be replayed offline with its callees mocked. Costs one static bool
+        // read otherwise. Note this cannot see a call between two functions of the same overlay
+        // -- those are emitted as direct static calls -- which is why the oracle's own entry
+        // point is emitted at the callee instead of hooked here.
+        if (Verify.Oracle.Active) { Verify.Oracle.WrapCall(c, m, addr, CallInner); return; }
+        CallInner(c, m, addr);
+    }
+
+    static void CallInner(CpuContext c, IMemory m, uint addr)
     {
         if (TraceGs1 && (addr == 0x801216C4u || addr == 0x80121A00u || addr == 0x80121C04u ||
                          addr == 0x801223A8u || addr == 0x80122040u || addr == 0x80014F60u))
