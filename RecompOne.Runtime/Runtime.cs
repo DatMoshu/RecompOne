@@ -142,7 +142,12 @@ public static class Runtime
         // the next DRAWN frame, so this is correct on a frame whose redraw was skipped, and
         // gating it on `drew` instead silently loses most captures during a fast-forward.
         if (!headless && onMain) Host.CaptureManager.Tick(FrameCount); // --snap-window / --dump (engine-level, off by default); reads VRAM through the backend, so main only
-        if (!headless) Audio.Attach(Spu);
+        // While capturing, AudioCapture is the SPU's only consumer -- Mix advances voice/ADPCM
+        // decode state, so re-attaching the live mixer here would double-advance it and the
+        // capture would be missing every other buffer. See Host/AudioCapture.cs.
+        Host.AudioCapture.ArmIfRequested(Spu);
+        if (!headless && !Host.AudioCapture.Active) Audio.Attach(Spu);
+        Host.AudioCapture.Tick();
         AudioPeak = Host.Audio.MixPeak;
         AudioBuffers = Host.Audio.MixedBuffers;
         Audio.Suppressed = headless || (Host.Tas.TurboActive && Audio.MuteWhileFast);
