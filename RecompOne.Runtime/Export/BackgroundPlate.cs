@@ -406,6 +406,7 @@ public static class BackgroundPlate
             File.WriteAllText(sidecarJsonPath, JsonSerializer.Serialize(new
             {
                 what = "background plate, characters masked out by GteCapture classification",
+                contract = "Ports/Common/docs/data_formats.md Part 0.1",
                 rule,
                 pixelSource,
                 foregroundVertexThreshold = ForegroundVertexThreshold,
