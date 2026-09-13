@@ -454,6 +454,8 @@ public sealed class CdController
         }
     }
 
+    bool _shellSeen = true;   // nothing to report until a swap happens
+
     public CueFs Fs => _fs;
     public byte DriveStatusByte() => DriveStatus();
 
@@ -473,6 +475,7 @@ public sealed class CdController
         }
         _shellOpenUntil = Environment.TickCount64 + 1000;
         _shellLatch = true;
+        _shellSeen = false;
         RecompOne.Runtime.Log.Cd($"disc swapped -> {Path.GetFileName(cuePath)}");
     }
 
@@ -480,9 +483,22 @@ public sealed class CdController
     // stays set while the virtual lid is open, then is reported once more after close
     public byte ShellStatusBits()
     {
-        if (Environment.TickCount64 < _shellOpenUntil) return 0x10;
-        if (_shellLatch) { _shellLatch = false; return 0x10; }
-        return 0;
+        bool open = Environment.TickCount64 < _shellOpenUntil;
+        if (!open && !_shellLatch) return 0;
+        // "We swapped the disc" and "the game noticed" are different claims, and only the second
+        // one means multi-disc works. Say once, per swap, that the game actually read the bit --
+        // silence here after a swap means its disc-verify machine is polling something else (or
+        // nothing), which is the failure this bit exists to prevent.
+        if (!_shellSeen)
+        {
+            _shellSeen = true;
+            // NOT Log.Cd: that is off unless --trace-cd, and this is the one line that
+            // distinguishes "we swapped the disc" from "the game noticed", once per swap.
+            System.Console.WriteLine("[disc] shell-open bit read by the game — the disc change was detected");
+        }
+        if (open) return 0x10;
+        _shellLatch = false;
+        return 0x10;
     }
 
     public byte[] ReadSectorData(int lba)
