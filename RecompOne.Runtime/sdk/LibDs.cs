@@ -133,7 +133,13 @@ public static class LibDs
     public static void DsQueueLen(CpuContext c, IMemory m) => c.V0 = 0;
     public static void DsStatus(CpuContext c, IMemory m)
     {
-        c.V0 = _status;
+        // A DISC SWAP MUST REACH THIS PATH TOO. The MMIO drive (CdController.DriveStatus) and the
+        // libcd HLE (LibCd.EffectiveStatus) both fold in the controller's shell-open bit, but
+        // libds kept only its own latch -- so a game whose CD traffic goes through libds was never
+        // told the disc changed, and its disc-verify state machine would wait forever on a swap it
+        // could not see. PE1 is exactly that game: FUN_80069B08 polls DsStatus for bit 0x10.
+        // ShellStatusBits() is itself read-once, so OR-ing it here cannot lose the event.
+        c.V0 = (uint)(_status | (Runtime.Cd?.ShellStatusBits() ?? 0));
         _status = (byte)(_status & ~0x10); // shell-open is a read-once event latch
     }
     public static void DsLastCom(CpuContext c, IMemory m) => c.V0 = _com;
